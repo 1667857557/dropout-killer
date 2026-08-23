@@ -8,17 +8,19 @@ Let `X in R_+^(G x C)` be a normalized scRNA-seq expression matrix. DropoutKille
 
 and only those coordinates are eligible for replacement.
 
+The biological-prior branch is restricted to **PPI and pathway information**. GRN / TF-target priors are intentionally excluded from the package contract.
+
 ## 2. SuperCell-style membership
 
-For a low-dimensional cell representation `z_c`, memberships are constructed separately inside hard strata such as major cell type (and optionally condition/donor).
+For a low-dimensional cell representation `z_c`, memberships are constructed separately inside hard strata such as major cell type and, optionally, condition or donor.
 
 Within stratum `s`, construct a Euclidean kNN graph `G_s=(V_s,E_s)` and apply walktrap hierarchical community detection. With `n_s` cells and graining level `gamma`, the requested number of memberships is
 
 `K_s = max(1, round(n_s/gamma))`.
 
-The dendrogram is cut at `K_s` (or at least the number of disconnected graph components). For large strata an anchor subset is clustered first; omitted cells are assigned to the nearest membership centroid in embedding space.
+The dendrogram is cut at `K_s`, or at least the number of disconnected graph components. For large strata an anchor subset is clustered first; omitted cells are assigned to the nearest membership centroid in embedding space.
 
-This follows the computational structure of SuperCell but deliberately moves biological-stratum separation **before** graph construction instead of relying only on post-hoc splitting.
+This follows the computational structure of SuperCell but moves biological-stratum separation **before** graph construction so that cross-stratum edges cannot influence membership boundaries.
 
 ## 3. Membership-local low-rank model
 
@@ -26,31 +28,39 @@ For membership `k`, let
 
 `Y_k = X[, C_k]`.
 
-Compute an uncentered rank-`r_k` SVD approximation
+Compute an uncentered rank-`r_k` approximation
 
 `Y_k ~= U_k Sigma_k V_k^T = Yhat_k`.
 
-A numeric rank can be supplied. With `rank="auto"`, singular-value spacings are compared with their tail distribution, following the ALRA rank-selection principle; the last spacing more than `rank_z` tail standard deviations above noise is retained.
+When genes greatly outnumber cells, the implementation may use the mathematically equivalent Gram decomposition
+
+`Y_k^T Y_k = V Lambda V^T`
+
+and reconstruct
+
+`Yhat_k = Y_k V_r V_r^T`.
+
+A numeric rank can be supplied. With `rank="auto"`, singular-value spacings are compared with their tail distribution following the ALRA rank-selection principle.
 
 ## 4. ALRA-derived zero-preserving gate
 
-For each gene `g` in membership `k`, define
+For gene `g` in membership `k`, define
 
 `q_gk = Q_p(Yhat_g,Ck)`
 
-and, only when the lower quantile is negative,
+and, when the lower quantile is negative,
 
 `tau_gk = |q_gk|`.
 
-An observed zero becomes an ALRA-gated candidate only if
+A value is an eligible candidate only if
 
 `X_gc = 0` and `Yhat_gc > tau_gk`.
 
-This is stricter than the original prototype, which applied a sigmoid to every matrix entry and therefore could mark observed non-zero values.
+Observed non-zero expression is therefore excluded before any recovery prior is consulted.
 
 ## 5. Confidence against the biological-zero null
 
-ALRA motivates using negative low-rank values to estimate the symmetric reconstruction-error distribution associated with biological zeros. DropoutKiller uses the working null
+Negative low-rank values estimate the symmetric reconstruction-error distribution associated with biological zeros. The working null is
 
 `E_gk ~ N(0, sigma_gk^2)`
 
@@ -62,79 +72,110 @@ For an ALRA-gated zero,
 
 `C_gc = Phi(Yhat_gc / sigma_gk)`.
 
-If there are too few negative values to estimate `sigma_gk`, the event is retained in the diagnostic candidate table but assigned neutral confidence `0.5`, so it does not enter the default high-confidence mask. `C_gc` is a null-tail confidence score, **not a calibrated posterior P(dropout | data)**. The default high-confidence mask is
+If too few negative values are available to estimate `sigma_gk`, the diagnostic candidate is assigned neutral confidence `0.5`; it cannot enter the default `0.95` high-confidence mask.
+
+`C_gc` is a null-tail confidence score, **not** a calibrated posterior `P(dropout | data)`.
+
+The default mask is
 
 `M_gc = I(X_gc=0) I(Yhat_gc>tau_gk) I(C_gc>=0.95)`.
 
 ## 6. Cell-space weighted borrowing
 
-For candidate `(g,c)`, consider only cells in the same membership. With squared latent distance
+For masked event `(g,c)`, only cells in the same membership are eligible donors. With squared latent distance
 
-`d_cj^2 = ||z_c-z_j||_2^2`, 
+`d_cj^2 = ||z_c-z_j||_2^2`,
 
 Gaussian weights are
 
 `w_cj proportional to exp(-d_cj^2 / sigma_c^2)`.
 
-Neighbor lookup is performed only for cells carrying masked events (RANN exact kNN within the membership), avoiding an O(n_k^2) full distance matrix. The default adaptive `sigma_c` is the median positive distance among the selected neighbors. For recovery of gene `g`, donors with `X_gj=0` are excluded by default (`neighbor_positive_only=TRUE`). This is configurable; setting it to `FALSE` recovers the literal all-neighbor Gaussian average. The default renormalized prediction is
+Neighbor lookup is performed only for cells carrying masked events. The default adaptive `sigma_c` is the median positive distance among selected neighbors.
+
+By default, donors with `X_gj=0` are excluded and weights are renormalized:
 
 `Xhat_gc^cell = sum_j w_cj X_gj I(X_gj>0) / sum_j w_cj I(X_gj>0)`.
 
-This avoids reinforcing a technical zero by averaging it with other unresolved zeros.
+Setting `neighbor_positive_only=FALSE` restores the literal all-neighbor Gaussian average.
 
-## 7. Gene-network prior
+## 7. PPI/pathway biological prior
 
-Let `A` be a PPI/pathway/GRN adjacency matrix aligned to expression genes. Self-edges are removed and each target row is L1-normalized.
+Two optional sources are supported:
 
-Direct raw-expression graph averaging is scale-sensitive. Therefore, inside each membership, genes are standardized:
+- `A^PPI`: PPI adjacency.
+- `A^path`: pathway-derived gene interaction adjacency.
 
-`Z_hc = (X_hc-mu_hk)/s_hk`.
+No GRN / TF-target prior is accepted.
 
-The network prediction is
+Each supplied prior is aligned to expression genes, self-edges are removed, and every target row is L1-normalized:
 
-`Zhat_gc = sum_h A_gh Z_hc`,
+`sum_h |A_gh| = 1` for rows with support.
 
-then mapped back to the target-gene scale:
+When both PPI and pathway priors are supplied, they are fused as
 
-`Xhat_gc^gene = max(0, mu_gk + s_gk Zhat_gc)`.
+`A* = omega_PPI A^PPI + omega_path A^path`
 
-The implementation algebraically rewrites this operation so sparse adjacency and sparse expression can be multiplied without materializing a full standardized `G x C` matrix.
+with
+
+`omega_PPI >= 0`, `omega_path >= 0`, and `omega_PPI + omega_path = 1`.
+
+The fused matrix is row-normalized again. If weights are not supplied, available priors receive equal weight.
+
+Direct raw-expression graph averaging is scale-sensitive. Therefore, within membership `k`:
+
+`Z_hc = (X_hc - mu_hk) / s_hk`.
+
+The prior prediction is
+
+`Zhat_gc = sum_h A*_gh Z_hc`
+
+and is mapped back to the target-gene scale:
+
+`Xhat_gc^prior = max(0, mu_gk + s_gk Zhat_gc)`.
+
+The sparse implementation algebraically rewrites the operation so that a global dense standardized `G x C` matrix is not materialized.
+
+The prior branch is **downstream of the dropout gate**. PPI/pathway information cannot convert an otherwise unsupported biological zero into a dropout candidate.
 
 ## 8. Selective hybrid recovery
 
-For mask entries, when both predictions exist,
+For masked events where both predictions exist,
 
-`Xhat_gc = alpha Xhat_gc^cell + (1-alpha) Xhat_gc^gene`,
+`Xhat_gc = alpha Xhat_gc^cell + (1-alpha) Xhat_gc^prior`
 
-with default `alpha=0.75`.
+with default `alpha = 0.75`.
 
-If only one component is available, component weights are renormalized rather than silently replacing the unavailable component with zero. If neither component is available, the observed zero remains zero.
+Thus the default recovery is
+
+`75% cell borrowing + 25% PPI/pathway prior`.
+
+If only one component exists, its weight is renormalized to 1. If neither exists, the zero remains unchanged.
 
 Finally,
 
-`Xfinal_gc = X_gc` for `M_gc=0`,
+`Xfinal_gc = X_gc` for `M_gc = 0`
 
 and
 
-`Xfinal_gc = Xhat_gc` for `M_gc=1` when a positive prediction is available.
+`Xfinal_gc = Xhat_gc` for `M_gc = 1` when a positive prediction is available.
 
 ## 9. Invariants
 
-The package enforces the following invariants:
-
 1. Mask entries must correspond to original zeros.
-2. Observed non-zero values are unchanged exactly by the core workflow.
-3. Recovery is membership-local in cell space.
-4. Supplied hard strata cannot be crossed during membership graph construction.
-5. Gene priors are optional and never required for cell-space recovery.
-6. Recovered values are continuous expression estimates and are not relabeled as raw counts.
-7. Sparse input remains sparse in the end-to-end recovery path; dense `G x C` prediction matrices are not created globally.
-
+2. Observed non-zero values are unchanged exactly.
+3. Cell-space recovery never crosses membership boundaries.
+4. Supplied hard biological strata cannot be crossed during membership graph construction.
+5. PPI/pathway priors are optional and never participate in dropout detection.
+6. GRN/TF-target priors are not part of the public or internal biological-prior contract.
+7. Recovered values are continuous expression estimates, not raw counts.
+8. Sparse input remains sparse in the end-to-end recovery path.
+9. Recovery is one-pass; recovered values are never fed back into detection or membership construction.
 
 ## 10. Statistical trade-offs
 
-- Hard biological strata prevent cross-label contamination but make membership quality dependent on annotation quality.
-- The Gaussian negative-tail model is a working null. Its confidence score is not an FDR or posterior probability.
-- Positive-only cell borrowing protects against unresolved technical zeros but targets the conditional-positive local mean and may be upward-biased.
-- Gene networks may encode context-mismatched relationships. For that reason the network branch is optional, follows the dropout gate rather than determining it, and receives only `1-alpha` weight when both components are available.
-- The pipeline is deliberately one-pass: recovered values never enter a second detection or membership round.
+- Hard strata prevent cross-label borrowing but make recovery dependent on annotation quality.
+- The Gaussian negative-tail model is a working null; its confidence is not an FDR or posterior probability.
+- Positive-only cell borrowing targets the conditional-positive local mean and may be upward-biased.
+- PPI and pathway resources may include relationships that are valid globally but inactive in the assayed cell state. This is why the prior branch is optional, applied only after the expression-derived dropout gate, and receives only `1-alpha` weight when cell borrowing is available.
+- Pathway edge direction is source-resource dependent. The edge-list constructor defaults pathway edges to directed and PPI edges to symmetric, but users should set `directed` according to the semantics of the resource.
+- The pipeline deliberately avoids iterative re-imputation because iterative reuse can amplify the package's own predictions.

@@ -6,8 +6,8 @@ Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.no
 Description: Detects high-confidence technical zero events in single-cell RNA-seq
     data using SuperCell-style local memberships and ALRA-inspired adaptive
     low-rank thresholding, then selectively recovers only those events using
-    latent-space neighbor borrowing and optional gene-network priors. Observed
-    non-zero values are never overwritten by the core workflow.
+    latent-space neighbor borrowing and optional PPI/pathway gene priors.
+    Observed non-zero values are never overwritten by the core workflow.
 License: MIT + file LICENSE
 URL: https://github.com/1667857557/dropout-killer
 BugReports: https://github.com/1667857557/dropout-killer/issues

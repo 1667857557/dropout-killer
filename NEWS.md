@@ -1,10 +1,10 @@
 # DropoutKiller 0.2.0
 
-- Replaced the incorrect embedding-to-`SCimplify()` wrapper with an internal SuperCell-style kNN/walktrap membership engine.
-- Added pre-graph biological strata, approximate anchor/centroid assignment, and membership diagnostics.
-- Replaced the arbitrary sigmoid score with ALRA-gated negative-tail confidence scoring restricted to observed zeros.
-- Added sparse mask construction and membership-local SVD processing.
-- Added Gaussian latent-space neighbor borrowing using positive-expression donors.
-- Added scale-aware PPI/pathway/GRN prediction and multi-network combination.
-- Added selective 75/25 hybrid recovery with availability-aware weight renormalization.
-- Added Seurat integration, validation invariants, documentation, unit tests, and R CMD check CI.
+- Rebuilt membership construction around the SuperCell graph/coarse-graining contract:
+  biological hard strata -> embedding-space kNN graph -> walktrap hierarchy -> gamma-controlled memberships.
+- Added membership-local ALRA-derived zero gating and negative-tail confidence scoring.
+- Added event-only Gaussian neighbor borrowing and sparse selective replacement.
+- Restricted biological priors to **PPI and pathway information only**. GRN/TF-target priors are intentionally unsupported.
+- Added membership-local standardized PPI/pathway prediction and explicit PPI/pathway fusion weights.
+- Added Seurat integration, diagnostics, mathematical contract, unit tests, and GitHub Actions R CMD check.
+- Enforced zero-only masks and exact preservation of observed non-zero expression.

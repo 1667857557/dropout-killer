@@ -1,15 +1,80 @@
 # DropoutKiller
 
-`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It does not impute an entire matrix. It first asks whether an observed zero has strong local evidence of being a technical dropout and modifies only events that pass that gate.
+`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It does not impute an entire expression matrix. It first identifies observed zeros with strong membership-local evidence of technical dropout, then modifies only those events.
 
-The implementation follows the framework in this repository while tightening several statistical and engineering points:
+The current biological-prior branch is deliberately restricted to **PPI and pathway information**. GRN / TF-target priors are not accepted by the public API.
 
-1. **SuperCell-style membership**: within user-supplied biological strata (typically major cell type), cells are connected by a Euclidean kNN graph in a low-dimensional embedding; walktrap hierarchical clustering is cut to approximately `n/gamma` memberships. Large strata can use the same anchor/centroid approximation idea as SuperCell.
-2. **Local ALRA gate**: each membership is decomposed independently. For gene `g`, the low-rank reconstruction is compared with an adaptive threshold derived from its negative tail. Only *observed zeros* above this threshold are candidates.
-3. **Dropout confidence**: negative low-rank values estimate a symmetric biological-zero error distribution. The reported confidence is one-sided evidence against that null; it is deliberately **not described as a calibrated posterior dropout probability**.
-4. **Cell-space recovery**: candidate expression is borrowed only from cells in the same membership, with Gaussian weights in the embedding and, by default, only from neighbors where that gene is observed (`>0`).
-5. **Gene-space prior**: optional PPI/pathway/GRN adjacency matrices are row-normalized and applied in membership-local standardized expression space to avoid directly averaging genes with incompatible expression scales.
-6. **Selective replacement**: when both components are available the default is `75%` cell borrowing + `25%` gene prior. If one component is unavailable, weights are renormalized over the available component. Observed non-zero values are never overwritten.
+## Complete workflow
+
+```text
+normalized scRNA-seq expression X (genes x cells)
+                 |
+                 +-----------------------------+
+                 |                             |
+                 v                             v
+        low-dimensional embedding       broad biological strata
+                 |                       (e.g. major cell type)
+                 +-------------+---------------+
+                               |
+                               v
+              SuperCell-style membership construction
+       kNN graph -> walktrap hierarchy -> gamma-controlled cut
+                               |
+                               v
+                   membership-local expression
+                               |
+                               v
+                     local low-rank model
+                               |
+                               v
+          ALRA-derived zero gate + negative-tail confidence
+                               |
+                    only observed X[g,c] = 0
+                               |
+                               v
+                   high-confidence dropout mask
+                               |
+               +---------------+----------------+
+               |                                |
+               v                                v
+      membership-local cell borrowing    PPI/pathway prior
+        Gaussian latent-space weights      standardized locally
+               |                                |
+               +---------------+----------------+
+                               |
+                               v
+                75% cell + 25% prior by default
+                    (renormalized if one missing)
+                               |
+                               v
+                    selective replacement only
+                               |
+                               v
+                     recovered expression
+```
+
+## Design contract
+
+1. **SuperCell-style membership**  
+   Within trusted broad biological strata, cells are connected by a Euclidean kNN graph in a low-dimensional embedding. Walktrap hierarchical clustering is cut to approximately `n/gamma` memberships. Large strata can use anchor clustering plus nearest-centroid assignment.
+
+2. **Membership-local ALRA gate**  
+   Each membership is decomposed independently. A zero is eligible only if its low-rank reconstruction exceeds a gene-specific adaptive threshold estimated from the negative reconstruction tail.
+
+3. **Confidence is evidence, not a posterior**  
+   Negative reconstructed values define a working biological-zero null. The returned score is one-sided null-tail confidence and is not labelled as a calibrated posterior dropout probability.
+
+4. **Cell-space recovery**  
+   Candidate expression is borrowed only from cells in the same membership. Gaussian latent-space weights are used and, by default, only cells with observed positive expression for the target gene contribute.
+
+5. **PPI/pathway prior only**  
+   PPI and pathway adjacency matrices are aligned to the expression genes, self-edges are removed, and target rows are L1-normalized. Prediction is performed in membership-local standardized gene space to prevent high-abundance genes from dominating only because of scale.
+
+6. **Selective hybrid recovery**  
+   When both components exist: `Xhat = alpha * Xhat_cell + (1-alpha) * Xhat_prior`, with `alpha = 0.75` by default. If one component is unavailable, the remaining component is renormalized to weight 1.
+
+7. **Observed values are immutable**  
+   Any mask entry overlapping an observed non-zero value is rejected. The core workflow never overwrites observed non-zero expression.
 
 ## Installation
 
@@ -17,9 +82,19 @@ The implementation follows the framework in this repository while tightening sev
 remotes::install_github("1667857557/dropout-killer")
 ```
 
-## Core matrix workflow
+For the development PR branch:
 
-`x` should be a non-negative normalized expression matrix with genes in rows and cells in columns. `embedding` should have cells in rows (typically PCA).
+```r
+remotes::install_github(
+  "1667857557/dropout-killer",
+  ref = "feature/complete-selective-dropout-framework",
+  upgrade = "never"
+)
+```
+
+## 1. Matrix workflow
+
+`x` must be a non-negative normalized expression matrix with genes in rows and cells in columns. `embedding` must contain cells in rows.
 
 ```r
 library(DropoutKiller)
@@ -28,7 +103,7 @@ fit <- dropout_killer(
   x = x,
   embedding = pca,
   group = major_cell_type,
-  split_by = condition,       # optional hard boundary
+  split_by = condition,
   gamma = 20,
   k_knn = 5,
   rank = "auto",
@@ -36,8 +111,7 @@ fit <- dropout_killer(
   threshold = 0.95,
   alpha = 0.75,
   neighbor_k = 30,
-  neighbor_positive_only = TRUE,
-  gene_networks = list(ppi, pathway, grn)
+  neighbor_positive_only = TRUE
 )
 
 fit
@@ -46,9 +120,88 @@ fit$events
 validate_dropout_result(fit, x)
 ```
 
-If condition-specific differences must not be borrowed across conditions, pass the condition vector to `split_by`. If the purpose is to allow local cross-condition borrowing within the same annotated cell state, leave `split_by = NULL` and interpret downstream condition comparisons accordingly.
+If condition-specific states must never borrow from one another, pass condition to `split_by`. If cross-condition borrowing within the same trusted biological state is intended, leave `split_by = NULL`.
 
-## Seurat workflow
+## 2. Build PPI/pathway priors
+
+### PPI
+
+PPI edges are symmetric by default:
+
+```r
+ppi <- gene_prior_from_edges(
+  ppi_edges,
+  genes = rownames(x),
+  source = "gene_a",
+  target = "gene_b",
+  weight = "score",
+  prior_type = "ppi"
+)
+```
+
+### Pathway
+
+Pathway edges default to directed because some curated pathway resources encode source-to-target direction. Set `directed = FALSE` when the source does not provide interpretable directionality.
+
+```r
+pathway <- gene_prior_from_edges(
+  pathway_edges,
+  genes = rownames(x),
+  source = "source_gene",
+  target = "target_gene",
+  weight = "weight",
+  prior_type = "pathway"
+)
+```
+
+The constructor accepts only `prior_type = "ppi"` or `"pathway"`.
+
+## 3. Run with PPI only
+
+```r
+fit_ppi <- dropout_killer(
+  x = x,
+  embedding = pca,
+  group = major_cell_type,
+  split_by = condition,
+  ppi = ppi,
+  alpha = 0.75
+)
+```
+
+## 4. Run with pathway only
+
+```r
+fit_pathway <- dropout_killer(
+  x = x,
+  embedding = pca,
+  group = major_cell_type,
+  split_by = condition,
+  pathway = pathway,
+  alpha = 0.75
+)
+```
+
+## 5. Run with PPI + pathway
+
+Both sources are aligned and row-normalized before fusion. By default they receive equal prior weight.
+
+```r
+fit_both <- dropout_killer(
+  x = x,
+  embedding = pca,
+  group = major_cell_type,
+  split_by = condition,
+  ppi = ppi,
+  pathway = pathway,
+  prior_weights = c(ppi = 0.5, pathway = 0.5),
+  alpha = 0.75
+)
+```
+
+The `prior_weights` control only the composition of the 25% biological-prior branch. `alpha = 0.75` still controls cell-space versus biological-prior recovery.
+
+## 6. Seurat workflow
 
 ```r
 obj <- dropout_killer_seurat(
@@ -59,39 +212,41 @@ obj <- dropout_killer_seurat(
   dims = 1:20,
   group_by = "major_cell_type",
   split_by = "condition",
-  new_assay = "DropoutKiller"
+  new_assay = "DropoutKiller",
+  ppi = ppi,
+  pathway = pathway,
+  prior_weights = c(ppi = 0.5, pathway = 0.5)
 )
 ```
 
-The recovered values are continuous and are stored as **assay data**, not raw counts. For count-based models, retain the original counts and use the recovery output only where a continuous expression representation is appropriate.
+Recovered values are continuous and are stored as **assay data**, not as raw counts.
 
-## Why the membership implementation is not a literal copy of SuperCell
-
-SuperCell builds a kNN graph, clusters it, and can split metacells by annotation after graph construction. DropoutKiller uses the same graph/coarse-graining logic but applies supplied biological strata **before** graph construction. This prevents cross-stratum graph edges from influencing membership boundaries, which is a stricter requirement for selective expression borrowing.
-
-## Main objects
+## Main API
 
 - `build_supercell_membership()`: graph-based membership construction.
-- `local_alra_detect()`: membership-local low-rank detection with adaptive negative-tail thresholding.
-- `select_dropout_mask()`: high-confidence sparse mask.
-- `weighted_neighbor_prediction()`: masked, membership-constrained cell prediction.
-- `gene_network_from_edges()` / `prepare_gene_network()` / `combine_gene_prior()`: edge-list construction and aligned PPI/pathway/GRN priors.
-- `gene_prior_prediction()`: masked gene-space prediction.
-- `recover_dropout_expression()`: selective hybrid recovery.
-- `dropout_killer()`: end-to-end pipeline.
+- `local_alra_detect()`: membership-local low-rank zero detection.
+- `select_dropout_mask()`: high-confidence zero-only sparse mask.
+- `weighted_neighbor_prediction()`: membership-local cell prediction.
+- `gene_prior_from_edges()`: construct a PPI or pathway adjacency prior.
+- `prepare_gene_prior()`: align and normalize one PPI/pathway prior.
+- `combine_gene_prior()`: fuse PPI and pathway priors.
+- `gene_prior_prediction()`: event-level PPI/pathway prediction.
+- `recover_dropout_expression()`: selective hybrid recovery for a supplied mask.
+- `dropout_killer()`: end-to-end workflow.
 - `dropout_killer_seurat()`: Seurat wrapper.
+- `validate_dropout_result()`: validate core zero-preserving invariants.
 
-See `inst/ALGORITHM.md` for the mathematical contract and implementation invariants.
+See `inst/ALGORITHM.md` for the mathematical contract.
 
-## Important design trade-offs
+## Important trade-offs
 
-- Hard `group`/`split_by` boundaries should use trusted broad labels. Noisy or over-fragmented annotations reduce membership size and therefore local low-rank power.
-- The 0.95 confidence gate is a null-tail evidence threshold, not a calibrated error rate. It should be validated by synthetic masking on the target dataset when strong quantitative claims depend on recovered values.
-- Positive-only neighbor borrowing avoids dilution by unresolved zeros but estimates expression conditional on observed donors and can be upward-biased. Set `neighbor_positive_only = FALSE` to use all local neighbors.
-- PPI/pathway/GRN information is an optional prior, not evidence that a target is expressed. It is used only after the zero event passes the expression-derived dropout gate.
-- Recovery is one-pass: recovered values are never fed back into membership construction or dropout detection, avoiding iterative self-reinforcement.
+- Hard `group`/`split_by` boundaries should use trusted broad labels. Over-fragmentation reduces membership size and local low-rank power.
+- `threshold = 0.95` is a null-tail evidence threshold, not an FDR or calibrated posterior probability.
+- Positive-only neighbor borrowing protects against unresolved technical zeros but estimates a conditional-positive local mean and can be upward-biased. Set `neighbor_positive_only = FALSE` for the literal all-neighbor Gaussian average.
+- PPI/pathway information is **not used to decide whether a zero is a dropout**. It is evaluated only after the expression-derived dropout gate has passed.
+- PPI/pathway priors can be context-mismatched. The prior branch therefore remains optional and subordinate to cell-space borrowing by default.
+- Recovery is one-pass: recovered values are never fed back into membership construction or dropout detection.
 
+## Methodological basis
 
-## Methodological references
-
-The membership engine is a critical adaptation of the SuperCell graph/coarse-graining design (kNN graph, walktrap hierarchy, gamma-controlled cut). The zero gate and automatic-rank logic are based on ALRA's low-rank/negative-tail construction. DropoutKiller does not reproduce either package verbatim; the implementation contracts above define where behavior intentionally differs for selective recovery.
+The membership engine critically adapts the SuperCell graph/coarse-graining design: kNN graph, walktrap hierarchy, and gamma-controlled coarse graining. The zero gate and automatic-rank logic adapt ALRA's low-rank and negative-tail ideas. DropoutKiller does not copy either implementation verbatim; its explicit zero-only mask and PPI/pathway-only recovery contract define the intended behavior.
