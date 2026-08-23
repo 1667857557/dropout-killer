@@ -1,17 +1,30 @@
 Package: DropoutKiller
-Title: Selective Dropout Recovery for Single-Cell RNA-seq
-Version: 0.1.0
-Authors@R: person("Developer", "Team", role=c("aut","cre"))
-Description: Selective high-confidence dropout detection using SuperCell-local membership, ALRA-inspired low-rank scoring, and hybrid cell/gene recovery.
-License: MIT
+Type: Package
+Title: Selective Dropout Recovery for Single-Cell RNA Sequencing
+Version: 0.2.0
+Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.noreply.github.com", role = c("aut", "cre"))
+Description: Detects high-confidence technical zero events in single-cell RNA-seq
+    data using SuperCell-style local memberships and ALRA-inspired adaptive
+    low-rank thresholding, then selectively recovers only those events using
+    latent-space neighbor borrowing and optional gene-network priors. Observed
+    non-zero values are never overwritten by the core workflow.
+License: MIT + file LICENSE
+URL: https://github.com/1667857557/dropout-killer
+BugReports: https://github.com/1667857557/dropout-killer/issues
 Encoding: UTF-8
-Roxygen: list(markdown=TRUE)
-RoxygenNote: 7.3.2
+Depends: R (>= 4.1.0)
 Imports:
     Matrix,
+    igraph,
     irlba,
-    Rcpp
+    matrixStats,
+    methods,
+    RANN,
+    stats,
+    utils
 Suggests:
     Seurat,
-    SuperCell,
-    testthat
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2

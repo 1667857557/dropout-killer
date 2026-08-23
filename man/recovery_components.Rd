@@ -1,0 +1,55 @@
+\name{weighted_neighbor_prediction}
+\alias{weighted_neighbor_prediction}
+\alias{prepare_gene_network}
+\alias{combine_gene_prior}
+\alias{gene_network_from_edges}
+\alias{gene_prior_prediction}
+\alias{recover_dropout_expression}
+\title{Selective cell-space and gene-space recovery components}
+\description{Predicts masked dropout events using membership-local latent neighbors and optional PPI/pathway/GRN adjacency priors, then applies selective hybrid recovery.}
+\usage{
+weighted_neighbor_prediction(x, embedding, membership, mask, k = 30L,
+  sigma = NULL, min_positive_neighbors = 1L, positive_only = TRUE,
+  return_events = FALSE)
+
+gene_network_from_edges(edges, genes = NULL, source = "source", target = "target",
+  weight = NULL, directed = TRUE)
+
+prepare_gene_network(adjacency, genes, remove_self = TRUE, normalize = TRUE)
+
+combine_gene_prior(networks, genes, weights = NULL, remove_self = TRUE)
+
+gene_prior_prediction(x, adjacency, membership, mask, standardize = TRUE,
+  min_sd = 1e-8, return_events = FALSE)
+
+recover_dropout_expression(x, mask, membership, embedding, alpha = 0.75,
+  adjacency = NULL, neighbor_k = 30L, neighbor_sigma = NULL,
+  min_positive_neighbors = 1L, neighbor_positive_only = TRUE, gene_standardize = TRUE,
+  cap_quantile = NULL, return_details = FALSE)
+}
+\arguments{
+\item{x}{Non-negative gene-by-cell expression matrix.}
+\item{embedding}{Cell-by-dimension latent representation.}
+\item{membership}{One membership label per cell.}
+\item{mask}{Sparse or dense logical matrix of eligible zero events.}
+\item{k, neighbor_k}{Maximum number of membership-local neighbors.}
+\item{sigma, neighbor_sigma}{Gaussian bandwidth. If NULL, an adaptive per-cell median distance is used.}
+\item{min_positive_neighbors}{Minimum positive-expression donors required.}
+\item{positive_only, neighbor_positive_only}{Use only donors with observed positive expression for the target gene; set FALSE to include zero-valued neighbors in the weighted mean.}
+\item{return_events, return_details}{Return event-level details in addition to predictions.}
+\item{edges}{Data frame of gene-network edges.}
+\item{source, target}{Column names for regulator/source and target genes. The matrix orientation is target-by-source.}
+\item{weight}{Optional edge-weight column name.}
+\item{directed}{Whether edges are directed. Set FALSE for symmetric PPI-style networks.}
+\item{adjacency}{Gene-by-gene adjacency matrix.}
+\item{genes}{Expression gene names.}
+\item{remove_self}{Remove network self-edges.}
+\item{normalize}{L1-normalize target rows.}
+\item{networks}{One network or a list of PPI/pathway/GRN matrices.}
+\item{weights}{Optional non-negative network weights.}
+\item{standardize, gene_standardize}{Perform membership-local gene scaling before graph prediction.}
+\item{min_sd}{Minimum gene standard deviation for standardized prediction.}
+\item{alpha}{Cell-space weight when both cell and gene predictions are available.}
+\item{cap_quantile}{Optional upper cap based on positive target-gene expression in the membership.}
+}
+\value{Sparse predictions, a prepared network, or a recovered expression matrix depending on the function.}
