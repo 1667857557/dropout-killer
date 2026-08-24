@@ -68,7 +68,7 @@
 #' graph construction itself cannot borrow edges across supplied strata.
 #'
 #' @export
-build_supercell_membership <- function(embedding, group = NULL, split_by = NULL, gamma = 20,
+build_supercell_membership <- function(embedding, group = NULL, split_by = NULL, gamma = 150,
                                        k_knn = 5L, method = c("walktrap", "louvain"),
                                        approximate = "auto", approx_n = 20000L,
                                        seed = 12345L, return_graph = FALSE) {
