@@ -1,13 +1,16 @@
 # DropoutKiller 0.4.0
 
 - Replaced neighbor-only recovery as the default with membership-local masked coexpression-factor recovery.
-- Dropout-mask entries are treated as missing during recovery learning; unmasked zeros remain observed biological zeros.
+- Dropout-mask entries are treated as missing target values during recovery; unmasked zeros remain observed biological zeros.
 - Excluded all current recovery-target genes from membership factor features so target expression cannot leak back into the cell-state representation used to predict it.
+- Simplified factor-state learning to one direct truncated SVD on standardized non-target genes; large memberships no longer build or fully diagonalize a dense cell-by-cell Gram matrix.
 - Added target-gene ridge prediction with exact analytic leave-one-out shrinkage toward the membership mean; unsupported coexpression automatically collapses to the mean without explicit fold CV.
-- Added event-level predictive standard deviations and a sparse `predictive_variance` output so uncertainty is not discarded when recovered means are written to the expression matrix.
+- Added event-level predictive standard deviations and a sparse `predictive_variance` output for masked-factor recovery so uncertainty is not discarded when recovered means are written to the expression matrix.
 - Added `sample_dropout_expression()` for uncertainty-aware completed-matrix draws; observed values remain exact.
+- Neighbor recovery now reports `uncertainty_available = FALSE` and `predictive_variance = NULL`; uncertainty-aware sampling rejects these results instead of interpreting missing uncertainty as zero variance.
+- Preserved the pre-0.4 positional order of the legacy neighbor/recovery arguments and appended the new factor-engine options after the historical public API.
 - Kept `weighted_neighbor_prediction()` and `recovery_method = "neighbor"` as an explicit comparator/legacy engine, but it is no longer the default recovery path.
-- Added synthetic masked-expression tests for coexpression recovery, fallback behavior, selective invariants, and uncertainty-aware draws.
+- Added synthetic masked-expression, positional-compatibility, scaling-path, selective-invariant, and uncertainty-semantics tests.
 
 # DropoutKiller 0.3.0
 
