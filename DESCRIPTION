@@ -1,13 +1,13 @@
 Package: DropoutKiller
 Type: Package
 Title: Selective Dropout Recovery for Single-Cell RNA Sequencing
-Version: 0.2.0
+Version: 0.3.0
 Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.noreply.github.com", role = c("aut", "cre"))
 Description: Detects high-confidence technical zero events in single-cell RNA-seq
     data using SuperCell-style local memberships and ALRA-inspired adaptive
     low-rank thresholding, then selectively recovers only those events using
-    latent-space neighbor borrowing and optional PPI/pathway gene priors.
-    Observed non-zero values are never overwritten by the core workflow.
+    membership-constrained latent-space neighbor borrowing with estimated
+    Gaussian weights. Observed non-zero values are never overwritten.
 License: MIT + file LICENSE
 URL: https://github.com/1667857557/dropout-killer
 BugReports: https://github.com/1667857557/dropout-killer/issues
