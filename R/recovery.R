@@ -70,7 +70,7 @@ recover_dropout_expression <- function(x, mask, membership, embedding,
 #'
 #' @export
 dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_by = NULL,
-                           gamma = 20, k_knn = 5L, approximate = "auto", approx_n = 20000L,
+                           gamma = 150, k_knn = 5L, approximate = "auto", approx_n = 20000L,
                            rank = "auto", max_rank = 20L, rank_z = 6, quantile_prob = 0.001,
                            threshold = 0.95, min_cells = 8L, min_negative = 3L,
                            neighbor_k = 30L, neighbor_sigma = NULL,
