@@ -5,7 +5,7 @@
 \description{Constructs biologically constrained memberships from a low-dimensional embedding using a Euclidean k-nearest-neighbor graph and graph community detection.}
 \usage{
 build_supercell_membership(embedding, group = NULL, split_by = NULL,
-  gamma = 20, k_knn = 5L, method = c("walktrap", "louvain"),
+  gamma = 150, k_knn = 5L, method = c("walktrap", "louvain"),
   approximate = "auto", approx_n = 20000L, seed = 12345L,
   return_graph = FALSE)
 
@@ -17,7 +17,7 @@ dropout_membership(object = NULL, embedding = NULL, reduction = "pca",
 \item{embedding}{Cell-by-dimension numeric matrix.}
 \item{group}{Optional hard biological stratum, typically major cell type.}
 \item{split_by}{Optional additional hard stratum such as condition or donor.}
-\item{gamma}{Average graining level; target memberships are approximately \code{n/gamma}.}
+\item{gamma}{Average graining level, default 150; target memberships are approximately \code{n/gamma}.}
 \item{k_knn}{Number of nearest neighbors.}
 \item{method}{Graph clustering method. Walktrap preserves the gamma-derived target.}
 \item{approximate}{Logical or \code{"auto"}; use anchor/centroid approximation for large strata.}

@@ -42,6 +42,8 @@ normalized scRNA-seq expression X (genes x cells)
                      recovered expression
 ```
 
+The default membership graining level is `gamma = 150`, giving a target of approximately `n/150` memberships within each hard biological stratum.
+
 ## Recovery model
 
 For a masked event `(g,c)`, donors are restricted to the same membership. For donor cell `j`,
@@ -76,7 +78,7 @@ fit <- dropout_killer(
   embedding = pca,
   group = major_cell_type,
   split_by = condition,
-  gamma = 20,
+  gamma = 150,
   k_knn = 5,
   rank = "auto",
   quantile_prob = 0.001,
