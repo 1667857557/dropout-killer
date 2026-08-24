@@ -132,7 +132,15 @@ Xhat_gc = max(0, mu_g + q_g (Xfactor_gc - mu_g))
 
 Thus unsupported coexpression cannot force a cell-specific value: `q_g = 0` collapses to the positive membership mean.
 
-Predictive variance is based on leave-one-out residual MSE rather than in-sample residual variance. For the default positive target, `sample_dropout_expression()` draws from a lower-truncated Gaussian approximation so a selected technical dropout is not sampled back into the biological-zero state.
+Predictive variance is based on leave-one-out residual MSE rather than in-sample residual variance. For the default positive target, `sample_dropout_expression()` uses a Gamma moment match. For stored predictive mean `m > 0` and variance `v`, it draws
+
+```text
+shape = m^2 / v
+scale = v / m
+X ~ Gamma(shape, scale)
+```
+
+so that `E[X] = m`, `Var(X) = v`, and the draw stays positive. This avoids the mean shift that would be introduced by simply truncating a Gaussian at zero.
 
 ## Matrix workflow
 
