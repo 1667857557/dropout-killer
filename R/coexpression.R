@@ -135,8 +135,6 @@
   df <- sum(diag(inv %*% XtX))
   df_shrunk <- 1 + q * max(df - 1, 0)
 
-  # LOO residual MSE estimates out-of-sample conditional-magnitude error more
-  # honestly than the in-sample residual variance used previously.
   sigma2 <- mean((y - loo_shrunk)^2)
   if (!is.finite(sigma2) || sigma2 < 0) sigma2 <- total_var
   h <- rowSums((Xq %*% inv) * Xq)
@@ -275,15 +273,19 @@ masked_factor_prediction <- function(x, membership, mask, factor_rank = 5L,
                      nrow(x), ncol(x), list(nm$genes, nm$cells))
 }
 
-.dk_positive_truncated_normal <- function(mu, sd) {
+.dk_positive_gamma_draw <- function(mu, sd) {
   out <- mu
-  good <- is.finite(mu) & is.finite(sd) & sd > 0
+  good <- is.finite(mu) & mu > 0 & is.finite(sd) & sd > 0
   if (any(good)) {
-    a <- stats::pnorm((0 - mu[good]) / sd[good])
-    a <- pmax(0, pmin(1 - 1e-12, a))
-    u <- stats::runif(sum(good), min = a, max = 1)
-    u <- pmax(1e-12, pmin(1 - 1e-12, u))
-    out[good] <- mu[good] + sd[good] * stats::qnorm(u)
+    variance <- sd[good]^2
+    shape <- mu[good]^2 / variance
+    scale <- variance / mu[good]
+    stable <- is.finite(shape) & shape > 0 & is.finite(scale) & scale > 0
+    draw <- mu[good]
+    if (any(stable)) {
+      draw[stable] <- stats::rgamma(sum(stable), shape = shape[stable], scale = scale[stable])
+    }
+    out[good] <- draw
   }
   pmax(out, 0)
 }
@@ -292,9 +294,9 @@ masked_factor_prediction <- function(x, membership, mask, factor_rank = 5L,
 #'
 #' Draws only previously recovered dropout events from their event-level
 #' predictive approximation. Observed entries remain exactly fixed.
-#' For the default positive-conditional recovery target, draws use a
-#' lower-truncated Gaussian approximation so an event already classified as a
-#' technical dropout is not sampled back into the biological-zero state.
+#' For the default positive-conditional recovery target, positive draws use a
+#' Gamma moment match with the stored predictive mean and variance, so repeated
+#' draws preserve those first two moments while remaining non-negative.
 #' Results from engines without an uncertainty model are rejected.
 #'
 #' @export
@@ -314,7 +316,7 @@ sample_dropout_expression <- function(result, n = 1L, seed = NULL) {
     out <- result$expression
     if (!length(use)) return(out)
     if (positive_target) {
-      draw <- .dk_positive_truncated_normal(ev$recovered[use], ev$prediction_sd[use])
+      draw <- .dk_positive_gamma_draw(ev$recovered[use], ev$prediction_sd[use])
     } else {
       draw <- pmax(0, stats::rnorm(length(use), mean = ev$recovered[use], sd = ev$prediction_sd[use]))
     }
