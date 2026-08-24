@@ -1,10 +1,8 @@
 .dk_membership_factor_scores <- function(x, cells, events, rank = 5L, feature_max = 2000L,
-                                         max_iter = 8L, tol = 1e-4,
                                          min_feature_observed = 20L) {
   n <- length(cells); G <- nrow(x)
   rank <- max(1L, as.integer(rank)); feature_max <- max(2L, as.integer(feature_max))
-  max_iter <- max(1L, as.integer(max_iter)); min_feature_observed <- max(3L, as.integer(min_feature_observed))
-  if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol <= 0) stop("factor_tol must be > 0", call. = FALSE)
+  min_feature_observed <- max(3L, as.integer(min_feature_observed))
   if (n < 3L || G < 2L) return(NULL)
   y <- x[, cells, drop = FALSE]
   miss_n <- integer(G)
@@ -24,42 +22,34 @@
   }
   k <- min(rank, n - 1L, length(good) - 1L)
   if (k < 1L) return(NULL)
-  yf <- as.matrix(y[good, , drop = FALSE])
-  sdv <- sqrt(vv[good])
-  z <- sweep(yf, 1L, mu[good], "-")
-  z <- sweep(z, 1L, sdv, "/")
-  observed <- matrix(TRUE, nrow = length(good), ncol = n)
-  if (nrow(events)) {
-    fi <- match(events$i, good); cj <- match(events$j, cells)
-    keep <- !is.na(fi) & !is.na(cj)
-    if (any(keep)) observed[cbind(fi[keep], cj[keep])] <- FALSE
+  z <- as.matrix(y[good, , drop = FALSE])
+  z <- sweep(z, 1L, mu[good], "-")
+  z <- sweep(z, 1L, sqrt(vv[good]), "/")
+  z[!is.finite(z)] <- 0
+  min_dim <- min(dim(z))
+  k <- min(k, min_dim - 1L)
+  if (k < 1L) return(NULL)
+  decomposition <- "irlba"
+  scores <- NULL
+  if (min_dim <= 64L || k >= floor(min_dim / 2L)) {
+    sv <- tryCatch(base::svd(z, nu = 0L, nv = k), error = function(e) NULL)
+    if (!is.null(sv)) {
+      scores <- sv$v[, seq_len(k), drop = FALSE]
+      decomposition <- "svd_exact"
+    }
+  } else {
+    v0 <- sin(seq_len(ncol(z)) * 1.618033988749895)
+    v0 <- v0 / sqrt(sum(v0 * v0))
+    sv <- tryCatch(irlba::irlba(z, nu = 0L, nv = k, v = v0), error = function(e) NULL)
+    if (!is.null(sv)) scores <- sv$v[, seq_len(k), drop = FALSE]
   }
-  z[!observed] <- 0
-  filled <- z; missing <- !observed
-  previous <- if (any(missing)) filled[missing] else numeric()
-  converged <- !any(missing); iter_used <- 0L
-  for (iter in seq_len(max_iter)) {
-    gram <- crossprod(filled)
-    eig <- eigen(gram, symmetric = TRUE)
-    positive <- which(is.finite(eig$values) & eig$values > max(1, eig$values[1L]) * 1e-10)
-    kk <- min(k, length(positive))
-    if (kk < 1L) return(NULL)
-    V <- eig$vectors[, seq_len(kk), drop = FALSE]
-    low <- as.matrix((filled %*% V) %*% t(V))
-    iter_used <- iter
-    if (!any(missing)) { converged <- TRUE; break }
-    current <- low[missing]
-    delta <- sqrt(mean((current - previous)^2)); scale0 <- sqrt(mean(previous^2)) + 1e-8
-    filled[missing] <- current
-    if (is.finite(delta) && delta / scale0 <= tol) { converged <- TRUE; break }
-    previous <- current
+  if (is.null(scores)) {
+    if (min_dim > 512L) return(NULL)
+    sv <- tryCatch(base::svd(z, nu = 0L, nv = k), error = function(e) NULL)
+    if (is.null(sv)) return(NULL)
+    scores <- sv$v[, seq_len(k), drop = FALSE]
+    decomposition <- "svd_exact_fallback"
   }
-  gram <- crossprod(filled)
-  eig <- eigen(gram, symmetric = TRUE)
-  positive <- which(is.finite(eig$values) & eig$values > max(1, eig$values[1L]) * 1e-10)
-  kk <- min(k, length(positive))
-  if (kk < 1L) return(NULL)
-  scores <- eig$vectors[, seq_len(kk), drop = FALSE]
   scores <- base::scale(scores, center = TRUE, scale = TRUE)
   scores[!is.finite(scores)] <- 0
   keep_score <- which(colSums(scores * scores) > 1e-10)
@@ -67,7 +57,7 @@
   scores <- scores[, keep_score, drop = FALSE]
   rownames(scores) <- colnames(x)[cells]
   list(scores = scores, rank = ncol(scores), n_features = length(good),
-       iterations = iter_used, converged = converged)
+       iterations = 1L, converged = TRUE, decomposition = decomposition)
 }
 
 .dk_ridge_factor_target <- function(xg, observed, scores, query, ridge = 1,
@@ -118,8 +108,7 @@
 }
 
 .dk_masked_factor_predict_events <- function(x, membership, events, factor_rank = 5L,
-                                             factor_features = 2000L, factor_max_iter = 8L,
-                                             factor_tol = 1e-4, factor_ridge = 1,
+                                             factor_features = 2000L, factor_ridge = 1,
                                              min_feature_observed = 20L,
                                              min_target_observed = 20L,
                                              cap_quantile = NULL) {
@@ -137,8 +126,8 @@
     cells <- which(membership == m); q <- which(events$membership == m)
     evm <- events[q, , drop = FALSE]
     fit <- .dk_membership_factor_scores(x, cells, evm, rank = factor_rank,
-                                        feature_max = factor_features, max_iter = factor_max_iter,
-                                        tol = factor_tol, min_feature_observed = min_feature_observed)
+                                        feature_max = factor_features,
+                                        min_feature_observed = min_feature_observed)
     scores <- if (is.null(fit)) NULL else fit$scores
     for (g in unique(evm$i)) {
       qg_local <- which(evm$i == g); qg <- q[qg_local]
@@ -166,18 +155,18 @@
 
 #' Masked membership-local coexpression prediction
 #'
-#' Learns a low-dimensional coexpression state inside each membership while
-#' excluding supplied dropout-mask entries from factor fitting. Target genes are
-#' excluded from the factor-feature set, preventing target-to-state leakage.
-#' Target expression is predicted by ridge regression on masked factor scores.
-#' Exact analytic leave-one-out predictions choose a shrinkage coefficient toward
-#' the membership mean, so unsupported coexpression cannot force a cell-specific
+#' Learns a low-dimensional coexpression state inside each membership from
+#' high-variance non-target genes. Because every gene carrying a recovery event
+#' is excluded from factor-state learning, the factor matrix itself contains no
+#' masked target coordinates and is obtained directly with a truncated SVD.
+#' Target expression is predicted by ridge regression on the resulting cell
+#' factors. Exact analytic leave-one-out predictions choose shrinkage toward the
+#' membership mean, so unsupported coexpression cannot force a cell-specific
 #' value. Event-level predictive standard deviations retain residual variation.
 #'
 #' @export
 masked_factor_prediction <- function(x, membership, mask, factor_rank = 5L,
-                                     factor_features = 2000L, factor_max_iter = 8L,
-                                     factor_tol = 1e-4, factor_ridge = 1,
+                                     factor_features = 2000L, factor_ridge = 1,
                                      min_feature_observed = 20L,
                                      min_target_observed = 20L,
                                      cap_quantile = NULL, return_events = FALSE) {
@@ -191,8 +180,8 @@ masked_factor_prediction <- function(x, membership, mask, factor_rank = 5L,
     events$membership <- membership[events$j]
   } else events$membership <- integer()
   fit <- .dk_masked_factor_predict_events(x, membership, events, factor_rank, factor_features,
-                                          factor_max_iter, factor_tol, factor_ridge,
-                                          min_feature_observed, min_target_observed, cap_quantile)
+                                          factor_ridge, min_feature_observed,
+                                          min_target_observed, cap_quantile)
   if (return_events) {
     events$prediction <- fit$prediction; events$factor_prediction <- fit$factor_prediction
     events$prediction_sd <- fit$prediction_sd; events$predictability <- fit$predictability
@@ -210,17 +199,20 @@ masked_factor_prediction <- function(x, membership, mask, factor_rank = 5L,
 #'
 #' Draws only previously recovered dropout events from their event-level
 #' Gaussian predictive approximation. Observed entries remain exactly fixed.
+#' Results from engines without an uncertainty model are rejected rather than
+#' being interpreted as zero-variance imputations.
 #'
 #' @export
 sample_dropout_expression <- function(result, n = 1L, seed = NULL) {
   if (!inherits(result, "DropoutKillerResult")) stop("result must be a DropoutKillerResult", call. = FALSE)
+  if (!isTRUE(result$uncertainty_available)) stop("predictive uncertainty is unavailable for this result; use recovery_method='masked_factor'", call. = FALSE)
   n <- as.integer(n)[1L]
   if (!is.finite(n) || n < 1L) stop("n must be >= 1", call. = FALSE)
   if (!is.null(seed)) set.seed(seed)
   ev <- result$events
-  use <- if (nrow(ev) && all(c("prediction_sd", "recovered", "changed") %in% names(ev))) {
-    which(ev$changed & is.finite(ev$recovered) & is.finite(ev$prediction_sd) & ev$prediction_sd >= 0)
-  } else integer()
+  use <- if (nrow(ev) && all(c("prediction_sd", "recovered", "changed") %in% names(ev))) which(ev$changed) else integer()
+  if (length(use) && any(!is.finite(ev$recovered[use]) | !is.finite(ev$prediction_sd[use]) | ev$prediction_sd[use] < 0))
+    stop("recovered events do not contain complete predictive uncertainty", call. = FALSE)
   one <- function() {
     out <- result$expression
     if (!length(use)) return(out)
