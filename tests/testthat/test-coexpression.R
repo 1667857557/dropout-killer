@@ -39,6 +39,37 @@ test_that("masked factor learns held-out coexpression without using the target v
   expect_true(all(ev$factor_converged[ev$factor_rank > 0]))
 })
 
+test_that("large factor fixture explicitly exercises truncated irlba", {
+  set.seed(117)
+  n <- 80L; p <- 70L
+  x <- matrix(rexp(p * n, rate = 0.4), nrow = p,
+              dimnames = list(paste0("g", seq_len(p)), paste0("c", seq_len(n))))
+  events <- data.frame(i = 1L, j = 1L, membership = 1L)
+  x[1, 1] <- 0
+  fit <- DropoutKiller:::.dk_membership_factor_scores(
+    x, seq_len(n), events, rank = 5L, feature_max = p - 1L, min_feature_observed = 20L
+  )
+  expect_false(is.null(fit))
+  expect_equal(fit$decomposition, "irlba")
+  expect_equal(fit$n_features, p - 1L)
+})
+
+test_that("rank-deficient factor features discard null singular directions", {
+  n <- 40L
+  state <- seq(-2, 2, length.out = n)
+  features <- vapply(seq_len(9L), function(j) 10 + j * state, numeric(n))
+  x <- rbind(g1 = 5 + state, t(features))
+  rownames(x) <- paste0("g", seq_len(nrow(x))); colnames(x) <- paste0("c", seq_len(n))
+  x[1, 1] <- 0
+  events <- data.frame(i = 1L, j = 1L, membership = 1L)
+  fit <- DropoutKiller:::.dk_membership_factor_scores(
+    x, seq_len(n), events, rank = 5L, feature_max = 9L, min_feature_observed = 20L
+  )
+  expect_false(is.null(fit))
+  expect_equal(fit$decomposition, "svd_exact")
+  expect_equal(fit$rank, 1L)
+})
+
 test_that("uncertainty-aware draws preserve all observed coordinates", {
   x <- matrix(c(0, 0, 4, 4,
                 1, 2, 3, 4), nrow = 2, byrow = TRUE)
