@@ -10,7 +10,7 @@ Only coordinates in `D` are eligible for replacement. Define
 
 `R_gc = 0` for `(g,c) in D`, and `R_gc = 1` otherwise.
 
-The key recovery contract is that `R_gc=0` means **missing**, not observed zero. Every unmasked zero remains an observed biological/sampling zero and participates in model fitting.
+The key recovery contract is that `R_gc=0` means **missing**, not observed zero. Every unmasked zero remains an observed biological/sampling zero and participates in target-gene fitting.
 
 No external PPI, pathway, GRN, or TF-target prior is used.
 
@@ -50,77 +50,109 @@ The new default instead estimates
 
 `E[X_gc | X_c,-g observed, same membership, M_gc=1]`
 
-while keeping unmasked zeros in the training data.
+while keeping unmasked zeros in the target-gene training data.
 
-## 5. Masked membership-local factor state
+## 5. Leakage-free membership-local factor state
 
-Within membership `k`, select up to `F` high-variance genes with enough unmasked observations. For each selected gene, compute the mean and variance using only `R_gc=1` entries and standardize
+Within membership `k`, define the set of all genes currently targeted for recovery:
+
+`T_k = {g : exists c with (g,c) in D_k}`.
+
+Genes in `T_k` are excluded from factor-feature learning. This is deliberately conservative: the target gene and other simultaneously recovered target genes cannot contribute to the cell-state representation used to predict them.
+
+From genes outside `T_k`, select up to `F` high-variance features with enough unmasked observations. For each selected gene, compute mean and variance from its observed entries and standardize
 
 `Z_gc = (X_gc - mu_g) / s_g`.
 
-Masked entries are initialized at standardized mean zero. Iterative masked low-rank reconstruction updates only the missing coordinates:
+Any masked coordinates among candidate features would be treated as missing, but because all current recovery targets are excluded, the default factor matrix is typically fully observed with respect to the active dropout mask. Missing working values are initialized at standardized mean zero. Iterative masked low-rank reconstruction updates only missing working coordinates:
 
 `Z_mis^(t+1) = P_r(Z_obs + Z_mis^(t))_mis`,
 
-where `P_r` is the rank-`r` orthogonal low-rank projection. Observed coordinates are never replaced during this factor-learning step.
+where `P_r` is the rank-`r` orthogonal low-rank projection. Observed coordinates are never replaced during factor learning.
 
 The resulting right singular/eigen vectors provide membership-local cell factors
 
 `z_c in R^r`.
 
-Because the factor stage is shared across genes, its dominant cost is based on a `n_k x n_k` Gram matrix after feature selection rather than a `G x G` gene-correlation matrix.
+Because this shared factor stage uses an `n_k x n_k` Gram matrix after feature selection, it avoids constructing a dense `G x G` gene-correlation matrix.
 
-## 6. Target-gene conditional prediction
+## 6. Target-gene ridge prediction
 
-For each target gene `g`, let `O_g` be membership cells whose `(g,c)` value is not masked. Fit ridge regression
+For each target gene `g`, let `O_g` be membership cells whose `(g,c)` value is not masked. Unmasked zeros belong to `O_g` exactly like any other observed value.
 
-`x_g,O = beta_0 + Z_O beta_g + epsilon`,
+Fit
 
-with
+`x_g,O = beta_0 + Z_O beta_g + epsilon`
+
+by ridge regression:
 
 `beta_hat = argmin_beta ||x_g,O - X_O beta||_2^2 + lambda ||beta_factor||_2^2`.
 
-The intercept is not penalized. If `X_O` is the design matrix and `P` the ridge penalty matrix,
+The intercept is unpenalized. If `P` is the ridge penalty matrix,
 
 `beta_hat = (X_O^T X_O + P)^(-1) X_O^T x_g,O`.
 
-The effective degrees of freedom are
+The associated linear smoother is
 
-`df_g = tr[(X_O^T X_O + P)^(-1) X_O^T X_O]`.
+`H = X_O (X_O^T X_O + P)^(-1) X_O^T`.
 
-## 7. GCV predictability shrinkage
+## 7. Exact analytic leave-one-out shrinkage
 
-A flexible factor model should not be allowed to create cell-specific expression merely because a low-rank representation exists. Compare its analytic generalized cross-validation error with the intercept-only membership model:
+For a fixed ridge penalty, leave-one-out predictions can be obtained without explicitly refitting `n_g` models. Let `h_ii` be the diagonal of `H`, `yhat_i` the full-data fitted value, and `e_i = y_i-yhat_i`. Then
 
-`GCV_factor = (SSE_factor/n) / (1 - df_g/n)^2`,
+`yhat_i^(-i) = y_i - e_i/(1-h_ii)`.
 
-`GCV_null = (SSE_null/n) / (1 - 1/n)^2`.
+Let the leave-one-out membership-mean null be
 
-Define
+`mu_i^(-i) = (sum_j y_j - y_i)/(n_g-1)`.
 
-`q_g = clip(1 - GCV_factor/GCV_null, 0, 1)`.
+Define the held-out factor deviation and held-out target deviation:
 
-The recovered conditional mean is
+`d_i = yhat_i^(-i) - mu_i^(-i)`,
+
+`t_i = y_i - mu_i^(-i)`.
+
+Consider the convex combination
+
+`ytilde_i(q) = mu_i^(-i) + q d_i`, `0 <= q <= 1`.
+
+Its leave-one-out squared error is
+
+`L(q) = sum_i (t_i - q d_i)^2`.
+
+The unconstrained minimizer follows directly from `dL/dq=0`:
+
+`q_raw = sum_i d_i t_i / sum_i d_i^2`.
+
+The recovery shrinkage is therefore
+
+`q_g = clip(q_raw, 0, 1)`.
+
+This is the exact squared-error optimum between the ridge factor predictor and membership-mean null on analytic leave-one-out predictions. Because `q=0` is always admissible, unsupported coexpression cannot force a cell-specific prediction.
+
+For a masked query cell `c`, let `m_gc^factor` be its full ridge factor prediction. The deterministic recovered mean is
 
 `m_gc = max[0, mu_g + q_g (m_gc^factor - mu_g)]`.
 
-Therefore:
+A separate held-out predictability statistic is
 
-- if factor structure has reproducible predictive value, `q_g > 0` and cell state contributes;
-- if it does not outperform the membership mean, `q_g = 0` and the model collapses to `mu_g`;
-- small or under-supported target fits also fall back to `mu_g` rather than extrapolating unstable coefficients.
+`P_g = clip(1 - SSE_LOO,shrunk/SSE_LOO,null, 0, 1)`.
 
-This is an analytic shrinkage gate and does not require explicit cross-validation folds.
+`q_g` controls shrinkage; `P_g` summarizes observed leave-one-out predictive gain. Small or under-supported target fits fall back to `q_g=0` and the membership mean.
 
 ## 8. Predictive uncertainty and differential variability
 
-The deterministic completed matrix stores `m_gc`, but a conditional mean alone cannot preserve full differential variability. After GCV shrinkage, estimate residual variance
+A conditional mean alone cannot preserve full differential variability. Let
 
-`sigma_g^2 = sum_{c in O_g}(x_gc - m_gc^fit)^2 / max(n_g - df_g^*, 1)`,
+`df_g = tr[(X_O^T X_O + P)^(-1)X_O^T X_O]`
 
-where
+and use the shrunken effective degrees of freedom
 
 `df_g^* = 1 + q_g(df_g - 1)`.
+
+Estimate residual variance from the shrunken in-sample mean:
+
+`sigma_g^2 = sum_{c in O_g}(x_gc - m_gc^fit)^2 / max(n_g - df_g^*, 1)`.
 
 For query design row `x_c`, ridge leverage is
 
@@ -130,9 +162,9 @@ The event-level predictive variance approximation is
 
 `v_gc = sigma_g^2 [1 + q_g^2 h_gc]`.
 
-DropoutKiller returns both
+DropoutKiller therefore represents each recovered event by both
 
-`m_gc = E[X_gc | observed information]`
+`m_gc ~= E[X_gc | observed information]`
 
 and
 
@@ -150,13 +182,13 @@ A point-imputed matrix retains only the first term. `predictive_variance` / `pre
 
 `X_gc^(b) = max(0, Normal(m_gc, v_gc))`.
 
-Observed coordinates are fixed exactly in every draw. The Gaussian predictive distribution is an approximation on the same expression scale as the package input; the function is intended for sensitivity, DV, and coexpression propagation rather than reinterpretation as raw UMI counts.
+Observed coordinates are fixed exactly in every draw. The Gaussian predictive distribution is an approximation on the same expression scale as the package input; these draws are intended for sensitivity, DV, and coexpression propagation rather than reinterpretation as raw UMI counts.
 
 Repeated draws allow downstream summaries such as
 
 `E_b[Var_c(X_g^(b))]`
 
-or repeated covariance/network estimation without falsely treating every recovered mean as perfectly known.
+or repeated covariance/network estimation without treating every recovered mean as perfectly known.
 
 ## 10. Legacy neighbor engine
 
@@ -182,26 +214,28 @@ Observed non-dropout values are never overwritten.
 
 ## 12. Computational scaling
 
-For membership size `n_k`, selected factor features `F`, factor rank `r`, and a small number of masked-factor iterations:
+For membership size `n_k`, selected non-target factor features `F`, factor rank `r`, and a small number of masked-factor iterations:
 
 - factor state uses feature-by-cell operations plus an `n_k x n_k` Gram eigendecomposition;
 - each target gene solves an `(r+1) x (r+1)` ridge system;
+- exact LOO diagnostics require only the smoother diagonal, not `n_g` separate refits;
 - no dense `G x G` coexpression matrix is formed.
 
-With the package default `gamma=150`, `r=5`, and `F<=2000`, this is substantially smaller than fitting a full graphical model or all-gene elastic-net inside every membership.
+With default `gamma=150`, `r=5`, and `F<=2000`, this is substantially smaller than a full graphical model or all-gene elastic-net inside every membership.
 
 ## 13. Invariants
 
 1. Mask entries must correspond to original zeros.
-2. Masked zeros are missing for recovery learning; unmasked zeros remain observations.
-3. Observed non-dropout values remain numerically exact.
-4. Recovery never crosses membership boundaries.
-5. Unsupported factor predictions shrink to the membership mean.
-6. Predictive uncertainty is retained separately from the deterministic mean matrix.
-7. External biological priors do not enter detection or recovery.
-8. The dropout mask is never redefined by recovery.
-9. Iterative factor updates change only masked working values, not observed data.
+2. Masked zeros are missing for recovery; unmasked zeros remain target observations.
+3. Current recovery-target genes do not contribute to factor-state learning.
+4. Observed non-dropout values remain numerically exact.
+5. Recovery never crosses membership boundaries.
+6. Unsupported factor predictions shrink to the membership mean.
+7. Predictive uncertainty is retained separately from the deterministic mean matrix.
+8. External biological priors do not enter detection or recovery.
+9. The dropout mask is never redefined by recovery.
+10. Iterative factor updates change only missing working coordinates, not observed data.
 
 ## 14. Validation principle
 
-Recovery correctness cannot be established by observing that correlation becomes stronger after imputation, because the same coexpression structure generated the prediction. Valid benchmarking should hide known values, refit without them, and compare held-out predictive likelihood/error against the membership-mean baseline. The internal GCV shrinkage serves as a low-cost gene-wise prediction gate; larger empirical benchmarks should still use pseudo-dropout or thinning-based held-out validation.
+Recovery correctness cannot be established by observing stronger correlation after imputation, because the same coexpression structure generated the prediction. The analytic leave-one-out target regression provides an internal, leakage-reduced prediction check at negligible extra fitting cost. Larger empirical benchmarks should still use pseudo-dropout or Poisson/binomial thinning and evaluate held-out predictive error, DV recovery, and covariance recovery against independent information.
