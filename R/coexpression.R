@@ -16,6 +16,7 @@
   vv[okv] <- (sum2[okv] - nobs[okv] * mu[okv]^2) / (nobs[okv] - 1L)
   vv <- pmax(vv, 0)
   good <- which(nobs >= min_feature_observed & is.finite(vv) & vv > 1e-10)
+  if (nrow(events)) good <- setdiff(good, unique(events$i))
   if (length(good) < 2L) return(NULL)
   if (length(good) > feature_max) {
     ord <- order(vv[good], decreasing = TRUE)
@@ -78,7 +79,7 @@
   fallback <- function() {
     pv <- if (nobs > 0L) total_var * (1 + 1 / nobs) else 0
     list(prediction = rep(max(0, mu), length(query)), factor_prediction = rep(NA_real_, length(query)),
-         prediction_sd = rep(sqrt(max(0, pv)), length(query)), predictability = 0,
+         prediction_sd = rep(sqrt(max(0, pv)), length(query)), predictability = 0, shrinkage = 0,
          n_observed = nobs, method = "membership_mean", effective_df = 1)
   }
   if (!nobs || is.null(scores) || !ncol(scores) ||
@@ -90,23 +91,29 @@
   inv <- tryCatch(solve(A), error = function(e) NULL)
   if (is.null(inv) || any(!is.finite(inv))) return(fallback())
   beta <- as.vector(inv %*% crossprod(Xo, y)); fitted <- as.vector(Xo %*% beta)
-  df <- sum(diag(inv %*% XtX)); sse <- sum((y - fitted)^2)
-  model_denom <- max(1 - df / nobs, 1 / nobs)
-  null_denom <- max(1 - 1 / nobs, 1 / nobs)
-  model_gcv <- (sse / nobs) / (model_denom^2)
-  null_gcv <- (total_sse / nobs) / (null_denom^2)
-  q <- if (is.finite(model_gcv) && is.finite(null_gcv) && null_gcv > 0) 1 - model_gcv / null_gcv else 0
+  Hdiag <- rowSums((Xo %*% inv) * Xo)
+  loo_denom <- pmax(1 - Hdiag, 1e-6)
+  loo_factor <- y - (y - fitted) / loo_denom
+  loo_null <- if (nobs > 1L) (sum(y) - y) / (nobs - 1L) else rep(mu, nobs)
+  d <- loo_factor - loo_null; target <- y - loo_null
+  den <- sum(d * d)
+  q <- if (is.finite(den) && den > 1e-12) sum(d * target) / den else 0
   q <- max(0, min(1, q))
+  loo_shrunk <- loo_null + q * d
+  null_loo_sse <- sum(target^2); model_loo_sse <- sum((y - loo_shrunk)^2)
+  predictability <- if (is.finite(null_loo_sse) && null_loo_sse > 0) 1 - model_loo_sse / null_loo_sse else 0
+  predictability <- max(0, min(1, predictability))
   Xq <- cbind(1, scores[query, , drop = FALSE]); raw <- as.vector(Xq %*% beta)
   pred <- pmax(mu + q * (raw - mu), 0)
-  fitted_shrunk <- mu + q * (fitted - mu); df_shrunk <- 1 + q * max(df - 1, 0)
+  df <- sum(diag(inv %*% XtX)); fitted_shrunk <- mu + q * (fitted - mu)
+  df_shrunk <- 1 + q * max(df - 1, 0)
   sigma2 <- sum((y - fitted_shrunk)^2) / max(nobs - df_shrunk, 1)
   if (!is.finite(sigma2) || sigma2 < 0) sigma2 <- total_var
   h <- rowSums((Xq %*% inv) * Xq)
   pv <- sigma2 * (1 + q^2 * pmax(h, 0))
   pv[!is.finite(pv) | pv < 0] <- total_var
   list(prediction = pred, factor_prediction = raw, prediction_sd = sqrt(pmax(pv, 0)),
-       predictability = q, n_observed = nobs,
+       predictability = predictability, shrinkage = q, n_observed = nobs,
        method = if (q > 0) "masked_factor" else "membership_mean", effective_df = df_shrunk)
 }
 
@@ -119,7 +126,7 @@
   n_ev <- nrow(events)
   out <- list(prediction = rep(NA_real_, n_ev), factor_prediction = rep(NA_real_, n_ev),
               prediction_sd = rep(NA_real_, n_ev), predictability = numeric(n_ev),
-              n_observed_gene = integer(n_ev), factor_rank = integer(n_ev),
+              shrinkage = numeric(n_ev), n_observed_gene = integer(n_ev), factor_rank = integer(n_ev),
               factor_features = integer(n_ev), factor_iterations = integer(n_ev),
               factor_converged = logical(n_ev), recovery_method = rep("unavailable", n_ev))
   if (!n_ev) return(out)
@@ -147,7 +154,7 @@
       }
       out$prediction[qg] <- pred; out$factor_prediction[qg] <- tg$factor_prediction
       out$prediction_sd[qg] <- tg$prediction_sd; out$predictability[qg] <- tg$predictability
-      out$n_observed_gene[qg] <- tg$n_observed; out$recovery_method[qg] <- tg$method
+      out$shrinkage[qg] <- tg$shrinkage; out$n_observed_gene[qg] <- tg$n_observed; out$recovery_method[qg] <- tg$method
       if (!is.null(fit)) {
         out$factor_rank[qg] <- fit$rank; out$factor_features[qg] <- fit$n_features
         out$factor_iterations[qg] <- fit$iterations; out$factor_converged[qg] <- fit$converged
@@ -160,11 +167,12 @@
 #' Masked membership-local coexpression prediction
 #'
 #' Learns a low-dimensional coexpression state inside each membership while
-#' excluding supplied dropout-mask entries from factor fitting. Target-gene
-#' expression is predicted by ridge regression on masked factor scores. GCV
-#' shrinks unsupported cell-specific predictions toward the membership mean.
-#' Event-level predictive standard deviations retain residual variation that is
-#' lost when only posterior/predictive means are written to a completed matrix.
+#' excluding supplied dropout-mask entries from factor fitting. Target genes are
+#' excluded from the factor-feature set, preventing target-to-state leakage.
+#' Target expression is predicted by ridge regression on masked factor scores.
+#' Exact analytic leave-one-out predictions choose a shrinkage coefficient toward
+#' the membership mean, so unsupported coexpression cannot force a cell-specific
+#' value. Event-level predictive standard deviations retain residual variation.
 #'
 #' @export
 masked_factor_prediction <- function(x, membership, mask, factor_rank = 5L,
@@ -188,9 +196,10 @@ masked_factor_prediction <- function(x, membership, mask, factor_rank = 5L,
   if (return_events) {
     events$prediction <- fit$prediction; events$factor_prediction <- fit$factor_prediction
     events$prediction_sd <- fit$prediction_sd; events$predictability <- fit$predictability
-    events$n_observed_gene <- fit$n_observed_gene; events$factor_rank <- fit$factor_rank
-    events$factor_features <- fit$factor_features; events$factor_iterations <- fit$factor_iterations
-    events$factor_converged <- fit$factor_converged; events$recovery_method <- fit$recovery_method
+    events$shrinkage <- fit$shrinkage; events$n_observed_gene <- fit$n_observed_gene
+    events$factor_rank <- fit$factor_rank; events$factor_features <- fit$factor_features
+    events$factor_iterations <- fit$factor_iterations; events$factor_converged <- fit$factor_converged
+    events$recovery_method <- fit$recovery_method
     return(events)
   }
   ok <- is.finite(fit$prediction) & fit$prediction > 0
