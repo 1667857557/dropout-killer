@@ -1,3 +1,8 @@
+test_that("membership defaults use gamma 150", {
+  expect_equal(formals(build_supercell_membership)$gamma, 150)
+  expect_equal(formals(dropout_killer)$gamma, 150)
+})
+
 test_that("membership never crosses hard groups", {
   set.seed(1)
   z <- rbind(matrix(rnorm(40, 0, 0.1), 20, 2), matrix(rnorm(40, 5, 0.1), 20, 2))
