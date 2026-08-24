@@ -20,3 +20,14 @@ test_that("membership is reproducible", {
   b <- build_supercell_membership(z, gamma = 10, k_knn = 4, seed = 9)$membership
   expect_equal(a, b)
 })
+
+test_that("returned membership labels are canonical and alignment-idempotent", {
+  set.seed(12)
+  z <- matrix(rnorm(180), 60, 3)
+  rownames(z) <- paste0("c", seq_len(nrow(z)))
+  group <- rep(c("B", "A"), 30)
+  fit <- build_supercell_membership(z, group = group, gamma = 10, k_knn = 4, seed = 13)
+  aligned <- DropoutKiller:::.dk_align_membership(fit$membership, rownames(z))
+  expect_identical(unname(fit$membership), aligned)
+  expect_identical(sort(unique(unname(fit$membership))), seq_len(length(unique(fit$membership))))
+})
