@@ -6,7 +6,7 @@
 \description{Builds or accepts cell memberships, detects high-confidence technical zero candidates with local ALRA-derived thresholding, and selectively recovers them using membership-local Gaussian neighbor weights estimated from latent-space distances.}
 \usage{
 dropout_killer(x, embedding, membership = NULL, group = NULL,
-  split_by = NULL, gamma = 20, k_knn = 5L, approximate = "auto",
+  split_by = NULL, gamma = 150, k_knn = 5L, approximate = "auto",
   approx_n = 20000L, rank = "auto", max_rank = 20L, rank_z = 6,
   quantile_prob = 0.001, threshold = 0.95, min_cells = 8L,
   min_negative = 3L, neighbor_k = 30L, neighbor_sigma = NULL,
@@ -14,7 +14,7 @@ dropout_killer(x, embedding, membership = NULL, group = NULL,
   cap_quantile = NULL, seed = 12345L, return_score = FALSE)
 
 DropoutKiller(x, embedding, membership = NULL, group = NULL,
-  split_by = NULL, gamma = 20, k_knn = 5L, approximate = "auto",
+  split_by = NULL, gamma = 150, k_knn = 5L, approximate = "auto",
   approx_n = 20000L, rank = "auto", max_rank = 20L, rank_z = 6,
   quantile_prob = 0.001, threshold = 0.95, min_cells = 8L,
   min_negative = 3L, neighbor_k = 30L, neighbor_sigma = NULL,
@@ -22,7 +22,7 @@ DropoutKiller(x, embedding, membership = NULL, group = NULL,
   cap_quantile = NULL, seed = 12345L, return_score = FALSE)
 
 run_dropout_killer(x, embedding, membership = NULL, group = NULL,
-  split_by = NULL, gamma = 20, k_knn = 5L, approximate = "auto",
+  split_by = NULL, gamma = 150, k_knn = 5L, approximate = "auto",
   approx_n = 20000L, rank = "auto", max_rank = 20L, rank_z = 6,
   quantile_prob = 0.001, threshold = 0.95, min_cells = 8L,
   min_negative = 3L, neighbor_k = 30L, neighbor_sigma = NULL,
@@ -35,7 +35,7 @@ run_dropout_killer(x, embedding, membership = NULL, group = NULL,
 \item{membership}{Optional precomputed memberships.}
 \item{group}{Optional major-cell-type or other hard biological stratum.}
 \item{split_by}{Optional additional hard boundary such as condition or donor.}
-\item{gamma, k_knn, approximate, approx_n}{Membership-construction parameters.}
+\item{gamma, k_knn, approximate, approx_n}{Membership-construction parameters; \code{gamma} defaults to 150.}
 \item{rank, max_rank, rank_z, quantile_prob, threshold, min_cells, min_negative}{Local low-rank detection parameters.}
 \item{neighbor_k, neighbor_sigma, min_positive_neighbors}{Neighbor-weight recovery parameters. With NULL bandwidth, the per-cell bandwidth is estimated from neighbor distances.}
 \item{neighbor_positive_only}{If TRUE, renormalize Gaussian weights over neighbors with observed positive target-gene expression; FALSE uses the all-neighbor weighted mean.}
