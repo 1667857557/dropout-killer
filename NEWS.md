@@ -1,3 +1,14 @@
+# DropoutKiller 0.5.0
+
+- Replaced the default membership-local empirical `quantile_prob = 0.001` ALRA gate with a finite-sample empirical-Bayes zero-null detector. The historical quantile gate remains available with `detection_method = "alra_quantile"`.
+- The new default `detection_method = "eb_zero_null"` estimates gene-specific zero-null variance from negative low-rank reconstructions and shrinks it toward a robust membership-level variance center using `variance_prior_df` pseudo-observations.
+- Positive reconstructed values at observed zeros are tested against the symmetric zero-null with one-sided Gaussian p-values and gene-wise Benjamini-Hochberg correction. Event `confidence` is now `1 - q_value`, not a Bayesian posterior probability; the default `threshold = 0.95` therefore corresponds to gene-wise q <= 0.05 under the working null model.
+- Changed masked-factor recovery to estimate positive conditional magnitude after an event has already been classified as technical dropout. The default `factor_target = "positive"` fits target genes only on reliable positive donors; `factor_target = "all_observed"` reproduces the previous zero-inflated target.
+- Replaced in-sample residual variance in the factor engine with analytic leave-one-out residual MSE. Positive-conditional multiple-imputation draws now use Gamma moment matching so the sampled distribution remains non-negative while preserving the stored predictive mean and variance.
+- Canonicalized internally built membership labels before returning them so returned membership vectors, detection labels, and recovery event labels remain idempotently aligned without changing the partition.
+- Preserved historical public argument positions by appending `detection_method`, `variance_prior_df`, and `factor_target` after the existing 0.4 API.
+- Added regression tests for finite-sample variance shrinkage, gene-wise BH score semantics, positive-conditional recovery, positive predictive draws, legacy quantile detection, and membership-label idempotence.
+
 # DropoutKiller 0.4.0
 
 - Replaced neighbor-only recovery as the default with membership-local masked coexpression-factor recovery.

@@ -99,6 +99,10 @@ build_supercell_membership <- function(embedding, group = NULL, split_by = NULL,
                             anchor_n = fit$anchor_n, stringsAsFactors = FALSE)
     if (return_graph) graphs[[lev[s]]] <- fit$graph
   }
+  # Canonicalize labels once in cell order before returning them. This leaves
+  # the partition unchanged but makes the result idempotent under the same
+  # alignment used later by detection/recovery, preventing label drift.
+  membership <- as.integer(factor(membership, levels = unique(membership)))
   names(membership) <- cells
   tab <- as.data.frame(table(membership), stringsAsFactors = FALSE)
   names(tab) <- c("membership", "n_cells"); tab$membership <- as.integer(as.character(tab$membership))
@@ -130,7 +134,7 @@ dropout_membership <- function(object = NULL, embedding = NULL, reduction = "pca
       group <- meta[[group_by]]; names(group) <- rownames(meta)
     }
     if (!is.null(split_by_col)) {
-      if (!split_by_col %in% colnames(meta)) stop("split_by_col not found in Seurat metadata", call. = FALSE)
+      if (!split_by_col %in% colnames(meta)) stop("split_by_col column not found in Seurat metadata", call. = FALSE)
       split_by <- meta[[split_by_col]]; names(split_by) <- rownames(meta)
     }
   } else if (is.null(embedding) && !is.null(object)) embedding <- object

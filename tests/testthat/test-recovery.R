@@ -1,4 +1,4 @@
-test_that("default recovery uses masked factor and preserves observed non-zero values", {
+test_that("default recovery uses positive-conditional masked factor and preserves observed non-zero values", {
   x <- matrix(c(0, 0, 4, 4, 1, 2, 3, 4), nrow = 2, byrow = TRUE)
   rownames(x) <- c("g1", "g2"); colnames(x) <- paste0("c", 1:4)
   mask <- Matrix::sparseMatrix(i = 1, j = 1, x = TRUE, dims = dim(x))
@@ -7,7 +7,8 @@ test_that("default recovery uses masked factor and preserves observed non-zero v
                                   min_target_observed = 10, return_details = TRUE)
   expect_equal(d$expression[x != 0], x[x != 0])
   expect_gt(d$expression[1, 1], 0)
-  expect_equal(d$events$recovery_method[1], "membership_mean")
+  expect_equal(d$events$recovery_method[1], "positive_membership_mean")
+  expect_equal(d$events$target_mode[1], "positive")
   expect_true(is.finite(d$events$prediction_sd[1]))
   expect_true(d$uncertainty_available)
 })
@@ -36,6 +37,8 @@ test_that("main workflow preserves the pre-0.4 positional recovery layout", {
                                        "min_positive_neighbors", "neighbor_positive_only",
                                        "cap_quantile", "seed", "return_score"))
   expect_gt(match("recovery_method", f), match("return_score", f))
+  expect_gt(match("detection_method", f), match("min_target_observed", f))
+  expect_gt(match("factor_target", f), match("min_target_observed", f))
 })
 
 test_that("recovery refuses a mask over non-zero data", {
