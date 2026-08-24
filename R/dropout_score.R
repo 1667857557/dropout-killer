@@ -141,7 +141,7 @@ select_dropout_mask <- function(score, threshold = 0.95, x = NULL) {
     return(.dk_sparse_logical(ev$i[keep], ev$j[keep], score$dimensions[1L], score$dimensions[2L], score$dimnames))
   }
   if (inherits(score, "sparseMatrix")) {
-    sm <- summary(score); keep <- sm$x >= threshold
+    sm <- Matrix::summary(score); keep <- sm$x >= threshold
     i <- sm$i[keep]; j <- sm$j[keep]
     nr <- nrow(score); nc <- ncol(score); dn <- dimnames(score)
   } else {
