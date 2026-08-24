@@ -35,6 +35,8 @@ test_that("masked factor learns held-out coexpression without using the target v
   expect_lt(sqrt(mean((ev$prediction - truth)^2)), sqrt(mean((baseline - truth)^2)))
   expect_gt(mean(ev$predictability), 0)
   expect_true(all(is.finite(ev$prediction_sd)))
+  expect_true(all(ev$factor_iterations[ev$factor_rank > 0] == 1L))
+  expect_true(all(ev$factor_converged[ev$factor_rank > 0]))
 })
 
 test_that("uncertainty-aware draws preserve all observed coordinates", {
@@ -46,10 +48,25 @@ test_that("uncertainty-aware draws preserve all observed coordinates", {
                                   factor_features = 2, min_feature_observed = 3,
                                   min_target_observed = 10, return_details = TRUE)
   res <- list(expression = d$expression, events = d$events,
+              uncertainty_available = TRUE,
               settings = list(recovery_method = "masked_factor"))
   class(res) <- "DropoutKillerResult"
   draws <- sample_dropout_expression(res, n = 3, seed = 9)
   observed <- x != 0
   expect_equal(length(draws), 3)
   for (z in draws) expect_equal(z[observed], x[observed])
+})
+
+test_that("uncertainty sampling rejects engines without an uncertainty model", {
+  x <- matrix(c(0, 8, 2), nrow = 1, dimnames = list("g1", c("c1", "c2", "c3")))
+  z <- matrix(c(0, 0.2, 1), ncol = 1, dimnames = list(colnames(x), "PC1"))
+  mask <- Matrix::sparseMatrix(i = 1, j = 1, x = TRUE, dims = dim(x))
+  d <- recover_dropout_expression(x, mask, rep(1, 3), z, neighbor_k = 2,
+                                  return_details = TRUE, recovery_method = "neighbor")
+  res <- list(expression = d$expression, events = d$events,
+              uncertainty_available = FALSE,
+              predictive_variance = NULL,
+              settings = list(recovery_method = "neighbor"))
+  class(res) <- "DropoutKillerResult"
+  expect_error(sample_dropout_expression(res), "unavailable")
 })
