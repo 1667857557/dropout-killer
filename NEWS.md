@@ -1,3 +1,14 @@
+# DropoutKiller 0.4.0
+
+- Replaced neighbor-only recovery as the default with membership-local masked coexpression-factor recovery.
+- Dropout-mask entries are treated as missing during recovery learning; unmasked zeros remain observed biological zeros.
+- Excluded all current recovery-target genes from membership factor features so target expression cannot leak back into the cell-state representation used to predict it.
+- Added target-gene ridge prediction with exact analytic leave-one-out shrinkage toward the membership mean; unsupported coexpression automatically collapses to the mean without explicit fold CV.
+- Added event-level predictive standard deviations and a sparse `predictive_variance` output so uncertainty is not discarded when recovered means are written to the expression matrix.
+- Added `sample_dropout_expression()` for uncertainty-aware completed-matrix draws; observed values remain exact.
+- Kept `weighted_neighbor_prediction()` and `recovery_method = "neighbor"` as an explicit comparator/legacy engine, but it is no longer the default recovery path.
+- Added synthetic masked-expression tests for coexpression recovery, fallback behavior, selective invariants, and uncertainty-aware draws.
+
 # DropoutKiller 0.3.0
 
 - Removed the PPI/pathway prior branch completely, including prior constructors, preparation/fusion/prediction APIs, internal prior prediction code, documentation, and tests.

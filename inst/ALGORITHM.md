@@ -2,137 +2,240 @@
 
 ## 1. Scope
 
-Let `X in R_+^(G x C)` be a normalized scRNA-seq expression matrix. DropoutKiller estimates only a sparse event set
+Let `X in R_+^(G x C)` be the input expression matrix and
 
-`D = {(g,c): X_gc = 0 and evidence supports technical dropout}`
+`D = {(g,c): X_gc = 0 and evidence supports technical dropout}`.
 
-and only those coordinates are eligible for replacement. Recovery uses expression and latent cell geometry only; no external biological prior enters detection or recovery.
+Only coordinates in `D` are eligible for replacement. Define
 
-## 2. SuperCell-style membership
+`R_gc = 0` for `(g,c) in D`, and `R_gc = 1` otherwise.
 
-For a low-dimensional cell representation `z_c`, memberships are constructed separately inside hard strata such as major cell type and, optionally, condition or donor.
+The key recovery contract is that `R_gc=0` means **missing**, not observed zero. Every unmasked zero remains an observed biological/sampling zero and participates in target-gene fitting.
 
-Within stratum `s`, construct a Euclidean kNN graph `G_s=(V_s,E_s)` and apply walktrap hierarchical community detection. With `n_s` cells and graining level `gamma`, the requested number of memberships is
+No external PPI, pathway, GRN, or TF-target prior is used.
+
+## 2. Membership construction
+
+For a low-dimensional cell representation `z_c`, memberships are constructed separately inside supplied hard biological strata. Within stratum `s`, build a Euclidean kNN graph and apply walktrap clustering. With `n_s` cells and graining level `gamma`, the target is
 
 `K_s = max(1, round(n_s/gamma))`.
 
-The dendrogram is cut at `K_s`, or at least the number of disconnected graph components. For large strata an anchor subset is clustered first; omitted cells are assigned to the nearest membership centroid in embedding space.
+The default `gamma=150` therefore targets memberships of order 150 cells while preserving hard biological boundaries.
 
-## 3. Membership-local low-rank model
+## 3. Dropout detection
 
-For membership `k`, let
-
-`Y_k = X[, C_k]`.
-
-Compute an uncentered rank-`r_k` approximation
+Detection remains independent of recovery. For membership `k`, compute an uncentered low-rank approximation
 
 `Y_k ~= U_k Sigma_k V_k^T = Yhat_k`.
 
-When genes greatly outnumber cells, the implementation may use the equivalent Gram decomposition
+For gene `g`, an observed zero is eligible only if its low-rank value passes the ALRA-derived negative-tail gate. The negative reconstruction tail supplies a working null scale and a one-sided confidence score. The default final mask is
 
-`Y_k^T Y_k = V Lambda V^T`
+`M_gc = I(X_gc=0) I(ALRA_gate_gc=1) I(C_gc>=0.95)`.
 
-and reconstruct
+`C_gc` is evidence against the working biological-zero reconstruction null, not a calibrated posterior dropout probability.
 
-`Yhat_k = Y_k V_r V_r^T`.
+## 4. Why recovery is no longer positive-only neighbor averaging
 
-A numeric rank can be supplied. With `rank="auto"`, singular-value spacings are compared with their tail distribution following the ALRA rank-selection principle.
+The previous default estimated
 
-## 4. ALRA-derived zero-preserving gate
+`E[X_g | X_g > 0, local state]`
 
-For gene `g` in membership `k`, define
+because zero-valued donors were excluded. In general,
 
-`q_gk = Q_p(Yhat_g,Ck)`
+`E[X_g | X_g > 0, state] >= E[X_g | state]`,
 
-and, when the lower quantile is negative,
+so using the conditional-positive mean for a known missing expression value introduces upward bias whenever the target distribution has nonzero zero mass.
 
-`tau_gk = |q_gk|`.
+The new default instead estimates
 
-A value is an eligible candidate only if
+`E[X_gc | X_c,-g observed, same membership, M_gc=1]`
 
-`X_gc = 0` and `Yhat_gc > tau_gk`.
+while keeping unmasked zeros in the target-gene training data.
 
-Observed non-zero expression is therefore excluded before recovery.
+## 5. Leakage-free membership-local factor state
 
-## 5. Confidence against the biological-zero null
+Within membership `k`, define the set of all genes currently targeted for recovery:
 
-Negative low-rank values estimate a symmetric reconstruction-error distribution associated with biological zeros. The working null is
+`T_k = {g : exists c with (g,c) in D_k}`.
 
-`E_gk ~ N(0, sigma_gk^2)`
+Genes in `T_k` are excluded from factor-feature learning. This is deliberately conservative: the target gene and other simultaneously recovered target genes cannot contribute to the cell-state representation used to predict them.
 
-with
+From genes outside `T_k`, select up to `F` high-variance features with enough unmasked observations. For each selected gene, compute mean and variance from its observed entries and standardize
 
-`sigma_gk^2 = mean(e^2 : e = Yhat_gj < 0)`.
+`Z_gc = (X_gc - mu_g) / s_g`.
 
-For an ALRA-gated zero,
+Any masked coordinates among candidate features would be treated as missing, but because all current recovery targets are excluded, the default factor matrix is typically fully observed with respect to the active dropout mask. Missing working values are initialized at standardized mean zero. Iterative masked low-rank reconstruction updates only missing working coordinates:
 
-`C_gc = Phi(Yhat_gc / sigma_gk)`.
+`Z_mis^(t+1) = P_r(Z_obs + Z_mis^(t))_mis`,
 
-If too few negative values are available to estimate `sigma_gk`, confidence is set to `0.5`. The default mask is
+where `P_r` is the rank-`r` orthogonal low-rank projection. Observed coordinates are never replaced during factor learning.
 
-`M_gc = I(X_gc=0) I(Yhat_gc>tau_gk) I(C_gc>=0.95)`.
+The resulting right singular/eigen vectors provide membership-local cell factors
 
-`C_gc` is a null-tail confidence score, not a calibrated posterior dropout probability.
+`z_c in R^r`.
 
-## 6. Estimated neighbor weights
+Because this shared factor stage uses an `n_k x n_k` Gram matrix after feature selection, it avoids constructing a dense `G x G` gene-correlation matrix.
 
-For a masked event `(g,c)`, only cells in the same membership are eligible donors. With latent distance
+## 6. Target-gene ridge prediction
 
-`d_cj^2 = ||z_c-z_j||_2^2`,
+For each target gene `g`, let `O_g` be membership cells whose `(g,c)` value is not masked. Unmasked zeros belong to `O_g` exactly like any other observed value.
 
-raw Gaussian weights are
+Fit
 
-`a_cj = exp(-d_cj^2 / sigma_c^2)`.
+`x_g,O = beta_0 + Z_O beta_g + epsilon`
 
-If `neighbor_sigma=NULL`, the bandwidth is estimated for each query cell as the median positive distance among selected neighbors:
+by ridge regression:
 
-`sigma_c = median({d_cj : d_cj > 0})`.
+`beta_hat = argmin_beta ||x_g,O - X_O beta||_2^2 + lambda ||beta_factor||_2^2`.
 
-The all-neighbor normalized weights are
+The intercept is unpenalized. If `P` is the ridge penalty matrix,
 
-`w_cj = a_cj / sum_l a_cl`.
+`beta_hat = (X_O^T X_O + P)^(-1) X_O^T x_g,O`.
 
-By default, donors with `X_gj=0` are excluded for the target gene and the effective weights are renormalized over positive donors:
+The associated linear smoother is
 
-`w*_gcj = w_cj I(X_gj>0) / sum_l w_cl I(X_gl>0)`.
+`H = X_O (X_O^T X_O + P)^(-1) X_O^T`.
 
-The recovered value is therefore
+## 7. Exact analytic leave-one-out shrinkage
 
-`Xhat_gc = sum_j w*_gcj X_gj`.
+For a fixed ridge penalty, leave-one-out predictions can be obtained without explicitly refitting `n_g` models. Let `h_ii` be the diagonal of `H`, `yhat_i` the full-data fitted value, and `e_i = y_i-yhat_i`. Then
 
-Setting `neighbor_positive_only=FALSE` instead uses
+`yhat_i^(-i) = y_i - e_i/(1-h_ii)`.
 
-`Xhat_gc = sum_j w_cj X_gj`.
+Let the leave-one-out membership-mean null be
 
-If the required donor support is unavailable, the zero remains unchanged. An optional `cap_quantile` can cap the prediction at a membership-local positive-expression quantile for the target gene.
+`mu_i^(-i) = (sum_j y_j - y_i)/(n_g-1)`.
 
-## 7. Selective replacement
+Define the held-out factor deviation and held-out target deviation:
 
-The final matrix is
+`d_i = yhat_i^(-i) - mu_i^(-i)`,
 
-`Xfinal_gc = X_gc` for `M_gc = 0`,
+`t_i = y_i - mu_i^(-i)`.
+
+Consider the convex combination
+
+`ytilde_i(q) = mu_i^(-i) + q d_i`, `0 <= q <= 1`.
+
+Its leave-one-out squared error is
+
+`L(q) = sum_i (t_i - q d_i)^2`.
+
+The unconstrained minimizer follows directly from `dL/dq=0`:
+
+`q_raw = sum_i d_i t_i / sum_i d_i^2`.
+
+The recovery shrinkage is therefore
+
+`q_g = clip(q_raw, 0, 1)`.
+
+This is the exact squared-error optimum between the ridge factor predictor and membership-mean null on analytic leave-one-out predictions. Because `q=0` is always admissible, unsupported coexpression cannot force a cell-specific prediction.
+
+For a masked query cell `c`, let `m_gc^factor` be its full ridge factor prediction. The deterministic recovered mean is
+
+`m_gc = max[0, mu_g + q_g (m_gc^factor - mu_g)]`.
+
+A separate held-out predictability statistic is
+
+`P_g = clip(1 - SSE_LOO,shrunk/SSE_LOO,null, 0, 1)`.
+
+`q_g` controls shrinkage; `P_g` summarizes observed leave-one-out predictive gain. Small or under-supported target fits fall back to `q_g=0` and the membership mean.
+
+## 8. Predictive uncertainty and differential variability
+
+A conditional mean alone cannot preserve full differential variability. Let
+
+`df_g = tr[(X_O^T X_O + P)^(-1)X_O^T X_O]`
+
+and use the shrunken effective degrees of freedom
+
+`df_g^* = 1 + q_g(df_g - 1)`.
+
+Estimate residual variance from the shrunken in-sample mean:
+
+`sigma_g^2 = sum_{c in O_g}(x_gc - m_gc^fit)^2 / max(n_g - df_g^*, 1)`.
+
+For query design row `x_c`, ridge leverage is
+
+`h_gc = x_c^T (X_O^T X_O + P)^(-1) x_c`.
+
+The event-level predictive variance approximation is
+
+`v_gc = sigma_g^2 [1 + q_g^2 h_gc]`.
+
+DropoutKiller therefore represents each recovered event by both
+
+`m_gc ~= E[X_gc | observed information]`
 
 and
 
-`Xfinal_gc = Xhat_gc` for `M_gc = 1` when a finite positive neighbor prediction is available.
+`v_gc ~= Var[X_gc | observed information]`.
 
-There is no PPI/pathway branch and no fixed hybrid mixing coefficient.
+For a gene, the variance decomposition motivating DV-aware downstream analysis is
 
-## 8. Invariants
+`Var(X_g | Y) = Var_c(E[X_gc | Y]) + E_c(Var[X_gc | Y])`.
+
+A point-imputed matrix retains only the first term. `predictive_variance` / `prediction_sd` retain the second term explicitly.
+
+## 9. Uncertainty-aware completed draws
+
+`sample_dropout_expression()` generates repeated completed matrices. For a recovered event,
+
+`X_gc^(b) = max(0, Normal(m_gc, v_gc))`.
+
+Observed coordinates are fixed exactly in every draw. The Gaussian predictive distribution is an approximation on the same expression scale as the package input; these draws are intended for sensitivity, DV, and coexpression propagation rather than reinterpretation as raw UMI counts.
+
+Repeated draws allow downstream summaries such as
+
+`E_b[Var_c(X_g^(b))]`
+
+or repeated covariance/network estimation without treating every recovered mean as perfectly known.
+
+## 10. Legacy neighbor engine
+
+The previous Gaussian cell-neighbor estimator remains available with `recovery_method="neighbor"` and through `weighted_neighbor_prediction()`. It is no longer the default.
+
+For latent distance `d_cj`, neighbor weights are
+
+`w_cj proportional to exp(-d_cj^2/sigma_c^2)`.
+
+Positive-only donor renormalization remains available for reproducibility, but it targets a conditional-positive mean and is therefore not the default selective-recovery estimator.
+
+## 11. Selective replacement
+
+Final deterministic expression is
+
+`Xfinal_gc = X_gc` if `M_gc=0`,
+
+and
+
+`Xfinal_gc = m_gc` if `M_gc=1` and a finite positive prediction is available.
+
+Observed non-dropout values are never overwritten.
+
+## 12. Computational scaling
+
+For membership size `n_k`, selected non-target factor features `F`, factor rank `r`, and a small number of masked-factor iterations:
+
+- factor state uses feature-by-cell operations plus an `n_k x n_k` Gram eigendecomposition;
+- each target gene solves an `(r+1) x (r+1)` ridge system;
+- exact LOO diagnostics require only the smoother diagonal, not `n_g` separate refits;
+- no dense `G x G` coexpression matrix is formed.
+
+With default `gamma=150`, `r=5`, and `F<=2000`, this is substantially smaller than a full graphical model or all-gene elastic-net inside every membership.
+
+## 13. Invariants
 
 1. Mask entries must correspond to original zeros.
-2. Observed non-zero values are unchanged exactly.
-3. Recovery never crosses membership boundaries.
-4. Supplied hard biological strata cannot be crossed during membership graph construction.
-5. Recovery depends only on membership-local cell expression and estimated latent-space neighbor weights.
-6. Recovered values are continuous expression estimates, not raw counts.
-7. Sparse input remains sparse in the end-to-end recovery path.
-8. Recovery is one-pass; recovered values are never fed back into detection or membership construction.
+2. Masked zeros are missing for recovery; unmasked zeros remain target observations.
+3. Current recovery-target genes do not contribute to factor-state learning.
+4. Observed non-dropout values remain numerically exact.
+5. Recovery never crosses membership boundaries.
+6. Unsupported factor predictions shrink to the membership mean.
+7. Predictive uncertainty is retained separately from the deterministic mean matrix.
+8. External biological priors do not enter detection or recovery.
+9. The dropout mask is never redefined by recovery.
+10. Iterative factor updates change only missing working coordinates, not observed data.
 
-## 9. Statistical trade-offs
+## 14. Validation principle
 
-- Hard strata prevent cross-label borrowing but make recovery dependent on annotation quality.
-- The Gaussian negative-tail model is a working null; its confidence is not an FDR or posterior probability.
-- Positive-only borrowing targets the conditional-positive local mean and may be upward-biased.
-- Very small memberships or weak positive donor support can leave eligible zeros unrecovered rather than forcing an estimate.
-- The pipeline deliberately avoids iterative re-imputation because iterative reuse can amplify the package's own predictions.
+Recovery correctness cannot be established by observing stronger correlation after imputation, because the same coexpression structure generated the prediction. The analytic leave-one-out target regression provides an internal, leakage-reduced prediction check at negligible extra fitting cost. Larger empirical benchmarks should still use pseudo-dropout or Poisson/binomial thinning and evaluate held-out predictive error, DV recovery, and covariance recovery against independent information.
