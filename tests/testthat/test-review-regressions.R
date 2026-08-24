@@ -28,4 +28,13 @@ test_that("sparse Matrix summary dispatch does not require Matrix attachment", {
   expect_equal(nrow(d$events), 1L)
   expect_equal(d$events$i, 1L)
   expect_equal(d$events$j, 1L)
+
+  score <- Matrix::sparseMatrix(i = 1L, j = 2L, x = 0.99, dims = dim(xn), dimnames = dimnames(xn))
+  selected <- select_dropout_mask(score, threshold = 0.95)
+  expect_true(as.logical(selected[1, 2]))
+
+  res <- list(expression = x, mask = empty_mask)
+  class(res) <- "DropoutKillerResult"
+  chk <- validate_dropout_result(res, x)
+  expect_true(chk$valid)
 })
