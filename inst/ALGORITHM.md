@@ -2,137 +2,206 @@
 
 ## 1. Scope
 
-Let `X in R_+^(G x C)` be a normalized scRNA-seq expression matrix. DropoutKiller estimates only a sparse event set
+Let `X in R_+^(G x C)` be the input expression matrix and
 
-`D = {(g,c): X_gc = 0 and evidence supports technical dropout}`
+`D = {(g,c): X_gc = 0 and evidence supports technical dropout}`.
 
-and only those coordinates are eligible for replacement. Recovery uses expression and latent cell geometry only; no external biological prior enters detection or recovery.
+Only coordinates in `D` are eligible for replacement. Define
 
-## 2. SuperCell-style membership
+`R_gc = 0` for `(g,c) in D`, and `R_gc = 1` otherwise.
 
-For a low-dimensional cell representation `z_c`, memberships are constructed separately inside hard strata such as major cell type and, optionally, condition or donor.
+The key recovery contract is that `R_gc=0` means **missing**, not observed zero. Every unmasked zero remains an observed biological/sampling zero and participates in model fitting.
 
-Within stratum `s`, construct a Euclidean kNN graph `G_s=(V_s,E_s)` and apply walktrap hierarchical community detection. With `n_s` cells and graining level `gamma`, the requested number of memberships is
+No external PPI, pathway, GRN, or TF-target prior is used.
+
+## 2. Membership construction
+
+For a low-dimensional cell representation `z_c`, memberships are constructed separately inside supplied hard biological strata. Within stratum `s`, build a Euclidean kNN graph and apply walktrap clustering. With `n_s` cells and graining level `gamma`, the target is
 
 `K_s = max(1, round(n_s/gamma))`.
 
-The dendrogram is cut at `K_s`, or at least the number of disconnected graph components. For large strata an anchor subset is clustered first; omitted cells are assigned to the nearest membership centroid in embedding space.
+The default `gamma=150` therefore targets memberships of order 150 cells while preserving hard biological boundaries.
 
-## 3. Membership-local low-rank model
+## 3. Dropout detection
 
-For membership `k`, let
-
-`Y_k = X[, C_k]`.
-
-Compute an uncentered rank-`r_k` approximation
+Detection remains independent of recovery. For membership `k`, compute an uncentered low-rank approximation
 
 `Y_k ~= U_k Sigma_k V_k^T = Yhat_k`.
 
-When genes greatly outnumber cells, the implementation may use the equivalent Gram decomposition
+For gene `g`, an observed zero is eligible only if its low-rank value passes the ALRA-derived negative-tail gate. The negative reconstruction tail supplies a working null scale and a one-sided confidence score. The default final mask is
 
-`Y_k^T Y_k = V Lambda V^T`
+`M_gc = I(X_gc=0) I(ALRA_gate_gc=1) I(C_gc>=0.95)`.
 
-and reconstruct
+`C_gc` is evidence against the working biological-zero reconstruction null, not a calibrated posterior dropout probability.
 
-`Yhat_k = Y_k V_r V_r^T`.
+## 4. Why recovery is no longer positive-only neighbor averaging
 
-A numeric rank can be supplied. With `rank="auto"`, singular-value spacings are compared with their tail distribution following the ALRA rank-selection principle.
+The previous default estimated
 
-## 4. ALRA-derived zero-preserving gate
+`E[X_g | X_g > 0, local state]`
 
-For gene `g` in membership `k`, define
+because zero-valued donors were excluded. In general,
 
-`q_gk = Q_p(Yhat_g,Ck)`
+`E[X_g | X_g > 0, state] >= E[X_g | state]`,
 
-and, when the lower quantile is negative,
+so using the conditional-positive mean for a known missing expression value introduces upward bias whenever the target distribution has nonzero zero mass.
 
-`tau_gk = |q_gk|`.
+The new default instead estimates
 
-A value is an eligible candidate only if
+`E[X_gc | X_c,-g observed, same membership, M_gc=1]`
 
-`X_gc = 0` and `Yhat_gc > tau_gk`.
+while keeping unmasked zeros in the training data.
 
-Observed non-zero expression is therefore excluded before recovery.
+## 5. Masked membership-local factor state
 
-## 5. Confidence against the biological-zero null
+Within membership `k`, select up to `F` high-variance genes with enough unmasked observations. For each selected gene, compute the mean and variance using only `R_gc=1` entries and standardize
 
-Negative low-rank values estimate a symmetric reconstruction-error distribution associated with biological zeros. The working null is
+`Z_gc = (X_gc - mu_g) / s_g`.
 
-`E_gk ~ N(0, sigma_gk^2)`
+Masked entries are initialized at standardized mean zero. Iterative masked low-rank reconstruction updates only the missing coordinates:
+
+`Z_mis^(t+1) = P_r(Z_obs + Z_mis^(t))_mis`,
+
+where `P_r` is the rank-`r` orthogonal low-rank projection. Observed coordinates are never replaced during this factor-learning step.
+
+The resulting right singular/eigen vectors provide membership-local cell factors
+
+`z_c in R^r`.
+
+Because the factor stage is shared across genes, its dominant cost is based on a `n_k x n_k` Gram matrix after feature selection rather than a `G x G` gene-correlation matrix.
+
+## 6. Target-gene conditional prediction
+
+For each target gene `g`, let `O_g` be membership cells whose `(g,c)` value is not masked. Fit ridge regression
+
+`x_g,O = beta_0 + Z_O beta_g + epsilon`,
 
 with
 
-`sigma_gk^2 = mean(e^2 : e = Yhat_gj < 0)`.
+`beta_hat = argmin_beta ||x_g,O - X_O beta||_2^2 + lambda ||beta_factor||_2^2`.
 
-For an ALRA-gated zero,
+The intercept is not penalized. If `X_O` is the design matrix and `P` the ridge penalty matrix,
 
-`C_gc = Phi(Yhat_gc / sigma_gk)`.
+`beta_hat = (X_O^T X_O + P)^(-1) X_O^T x_g,O`.
 
-If too few negative values are available to estimate `sigma_gk`, confidence is set to `0.5`. The default mask is
+The effective degrees of freedom are
 
-`M_gc = I(X_gc=0) I(Yhat_gc>tau_gk) I(C_gc>=0.95)`.
+`df_g = tr[(X_O^T X_O + P)^(-1) X_O^T X_O]`.
 
-`C_gc` is a null-tail confidence score, not a calibrated posterior dropout probability.
+## 7. GCV predictability shrinkage
 
-## 6. Estimated neighbor weights
+A flexible factor model should not be allowed to create cell-specific expression merely because a low-rank representation exists. Compare its analytic generalized cross-validation error with the intercept-only membership model:
 
-For a masked event `(g,c)`, only cells in the same membership are eligible donors. With latent distance
+`GCV_factor = (SSE_factor/n) / (1 - df_g/n)^2`,
 
-`d_cj^2 = ||z_c-z_j||_2^2`,
+`GCV_null = (SSE_null/n) / (1 - 1/n)^2`.
 
-raw Gaussian weights are
+Define
 
-`a_cj = exp(-d_cj^2 / sigma_c^2)`.
+`q_g = clip(1 - GCV_factor/GCV_null, 0, 1)`.
 
-If `neighbor_sigma=NULL`, the bandwidth is estimated for each query cell as the median positive distance among selected neighbors:
+The recovered conditional mean is
 
-`sigma_c = median({d_cj : d_cj > 0})`.
+`m_gc = max[0, mu_g + q_g (m_gc^factor - mu_g)]`.
 
-The all-neighbor normalized weights are
+Therefore:
 
-`w_cj = a_cj / sum_l a_cl`.
+- if factor structure has reproducible predictive value, `q_g > 0` and cell state contributes;
+- if it does not outperform the membership mean, `q_g = 0` and the model collapses to `mu_g`;
+- small or under-supported target fits also fall back to `mu_g` rather than extrapolating unstable coefficients.
 
-By default, donors with `X_gj=0` are excluded for the target gene and the effective weights are renormalized over positive donors:
+This is an analytic shrinkage gate and does not require explicit cross-validation folds.
 
-`w*_gcj = w_cj I(X_gj>0) / sum_l w_cl I(X_gl>0)`.
+## 8. Predictive uncertainty and differential variability
 
-The recovered value is therefore
+The deterministic completed matrix stores `m_gc`, but a conditional mean alone cannot preserve full differential variability. After GCV shrinkage, estimate residual variance
 
-`Xhat_gc = sum_j w*_gcj X_gj`.
+`sigma_g^2 = sum_{c in O_g}(x_gc - m_gc^fit)^2 / max(n_g - df_g^*, 1)`,
 
-Setting `neighbor_positive_only=FALSE` instead uses
+where
 
-`Xhat_gc = sum_j w_cj X_gj`.
+`df_g^* = 1 + q_g(df_g - 1)`.
 
-If the required donor support is unavailable, the zero remains unchanged. An optional `cap_quantile` can cap the prediction at a membership-local positive-expression quantile for the target gene.
+For query design row `x_c`, ridge leverage is
 
-## 7. Selective replacement
+`h_gc = x_c^T (X_O^T X_O + P)^(-1) x_c`.
 
-The final matrix is
+The event-level predictive variance approximation is
 
-`Xfinal_gc = X_gc` for `M_gc = 0`,
+`v_gc = sigma_g^2 [1 + q_g^2 h_gc]`.
+
+DropoutKiller returns both
+
+`m_gc = E[X_gc | observed information]`
 
 and
 
-`Xfinal_gc = Xhat_gc` for `M_gc = 1` when a finite positive neighbor prediction is available.
+`v_gc ~= Var[X_gc | observed information]`.
 
-There is no PPI/pathway branch and no fixed hybrid mixing coefficient.
+For a gene, the variance decomposition motivating DV-aware downstream analysis is
 
-## 8. Invariants
+`Var(X_g | Y) = Var_c(E[X_gc | Y]) + E_c(Var[X_gc | Y])`.
+
+A point-imputed matrix retains only the first term. `predictive_variance` / `prediction_sd` retain the second term explicitly.
+
+## 9. Uncertainty-aware completed draws
+
+`sample_dropout_expression()` generates repeated completed matrices. For a recovered event,
+
+`X_gc^(b) = max(0, Normal(m_gc, v_gc))`.
+
+Observed coordinates are fixed exactly in every draw. The Gaussian predictive distribution is an approximation on the same expression scale as the package input; the function is intended for sensitivity, DV, and coexpression propagation rather than reinterpretation as raw UMI counts.
+
+Repeated draws allow downstream summaries such as
+
+`E_b[Var_c(X_g^(b))]`
+
+or repeated covariance/network estimation without falsely treating every recovered mean as perfectly known.
+
+## 10. Legacy neighbor engine
+
+The previous Gaussian cell-neighbor estimator remains available with `recovery_method="neighbor"` and through `weighted_neighbor_prediction()`. It is no longer the default.
+
+For latent distance `d_cj`, neighbor weights are
+
+`w_cj proportional to exp(-d_cj^2/sigma_c^2)`.
+
+Positive-only donor renormalization remains available for reproducibility, but it targets a conditional-positive mean and is therefore not the default selective-recovery estimator.
+
+## 11. Selective replacement
+
+Final deterministic expression is
+
+`Xfinal_gc = X_gc` if `M_gc=0`,
+
+and
+
+`Xfinal_gc = m_gc` if `M_gc=1` and a finite positive prediction is available.
+
+Observed non-dropout values are never overwritten.
+
+## 12. Computational scaling
+
+For membership size `n_k`, selected factor features `F`, factor rank `r`, and a small number of masked-factor iterations:
+
+- factor state uses feature-by-cell operations plus an `n_k x n_k` Gram eigendecomposition;
+- each target gene solves an `(r+1) x (r+1)` ridge system;
+- no dense `G x G` coexpression matrix is formed.
+
+With the package default `gamma=150`, `r=5`, and `F<=2000`, this is substantially smaller than fitting a full graphical model or all-gene elastic-net inside every membership.
+
+## 13. Invariants
 
 1. Mask entries must correspond to original zeros.
-2. Observed non-zero values are unchanged exactly.
-3. Recovery never crosses membership boundaries.
-4. Supplied hard biological strata cannot be crossed during membership graph construction.
-5. Recovery depends only on membership-local cell expression and estimated latent-space neighbor weights.
-6. Recovered values are continuous expression estimates, not raw counts.
-7. Sparse input remains sparse in the end-to-end recovery path.
-8. Recovery is one-pass; recovered values are never fed back into detection or membership construction.
+2. Masked zeros are missing for recovery learning; unmasked zeros remain observations.
+3. Observed non-dropout values remain numerically exact.
+4. Recovery never crosses membership boundaries.
+5. Unsupported factor predictions shrink to the membership mean.
+6. Predictive uncertainty is retained separately from the deterministic mean matrix.
+7. External biological priors do not enter detection or recovery.
+8. The dropout mask is never redefined by recovery.
+9. Iterative factor updates change only masked working values, not observed data.
 
-## 9. Statistical trade-offs
+## 14. Validation principle
 
-- Hard strata prevent cross-label borrowing but make recovery dependent on annotation quality.
-- The Gaussian negative-tail model is a working null; its confidence is not an FDR or posterior probability.
-- Positive-only borrowing targets the conditional-positive local mean and may be upward-biased.
-- Very small memberships or weak positive donor support can leave eligible zeros unrecovered rather than forcing an estimate.
-- The pipeline deliberately avoids iterative re-imputation because iterative reuse can amplify the package's own predictions.
+Recovery correctness cannot be established by observing that correlation becomes stronger after imputation, because the same coexpression structure generated the prediction. Valid benchmarking should hide known values, refit without them, and compare held-out predictive likelihood/error against the membership-mean baseline. The internal GCV shrinkage serves as a low-cost gene-wise prediction gate; larger empirical benchmarks should still use pseudo-dropout or thinning-based held-out validation.
