@@ -29,25 +29,34 @@
   min_dim <- min(dim(z))
   k <- min(k, min_dim - 1L)
   if (k < 1L) return(NULL)
+  take_scores <- function(sv) {
+    if (is.null(sv) || is.null(sv$v) || !length(sv$d) || !ncol(sv$v)) return(NULL)
+    m <- min(k, length(sv$d), ncol(sv$v))
+    if (m < 1L) return(NULL)
+    d <- sv$d[seq_len(m)]; lead <- sv$d[1L]
+    if (!is.finite(lead) || lead <= 0) return(NULL)
+    tol_d <- sqrt(max(1, lead * lead) * 1e-10)
+    keep <- which(is.finite(d) & d > tol_d)
+    if (!length(keep)) return(NULL)
+    sv$v[, keep, drop = FALSE]
+  }
   decomposition <- "irlba"
   scores <- NULL
   if (min_dim <= 64L || k >= floor(min_dim / 2L)) {
     sv <- tryCatch(base::svd(z, nu = 0L, nv = k), error = function(e) NULL)
-    if (!is.null(sv)) {
-      scores <- sv$v[, seq_len(k), drop = FALSE]
-      decomposition <- "svd_exact"
-    }
+    scores <- take_scores(sv)
+    if (!is.null(scores)) decomposition <- "svd_exact"
   } else {
     v0 <- sin(seq_len(ncol(z)) * 1.618033988749895)
     v0 <- v0 / sqrt(sum(v0 * v0))
     sv <- tryCatch(irlba::irlba(z, nu = 0L, nv = k, v = v0), error = function(e) NULL)
-    if (!is.null(sv)) scores <- sv$v[, seq_len(k), drop = FALSE]
+    scores <- take_scores(sv)
   }
   if (is.null(scores)) {
     if (min_dim > 512L) return(NULL)
     sv <- tryCatch(base::svd(z, nu = 0L, nv = k), error = function(e) NULL)
-    if (is.null(sv)) return(NULL)
-    scores <- sv$v[, seq_len(k), drop = FALSE]
+    scores <- take_scores(sv)
+    if (is.null(scores)) return(NULL)
     decomposition <- "svd_exact_fallback"
   }
   scores <- base::scale(scores, center = TRUE, scale = TRUE)
