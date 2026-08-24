@@ -57,7 +57,7 @@ test_that("large factor fixture explicitly exercises truncated irlba", {
 test_that("rank-deficient factor features discard null singular directions", {
   n <- 40L
   state <- seq(-2, 2, length.out = n)
-  features <- vapply(seq_len(9L), function(j) 10 + j * state, numeric(n))
+  features <- vapply(seq_len(9L), function(j) 25 + j * state, numeric(n))
   x <- rbind(g1 = 5 + state, t(features))
   rownames(x) <- paste0("g", seq_len(nrow(x))); colnames(x) <- paste0("c", seq_len(n))
   x[1, 1] <- 0
