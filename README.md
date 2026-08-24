@@ -17,8 +17,8 @@ expression X + cell embedding + optional biological strata
              high-confidence dropout mask M
                          |
                          v
-     masked membership-local coexpression factors
-   (target genes excluded; M entries are missing)
+    membership-local non-target coexpression factors
+      (all current target genes are excluded)
                          |
                          v
        target-gene ridge regression on cell factors
@@ -38,9 +38,11 @@ expression X + cell embedding + optional biological strata
 
 ## Recovery model
 
-Inside membership `m`, let `R_gc = 0` only for dropout-mask coordinates and `R_gc = 1` otherwise. Every current recovery-target gene is excluded from the factor-feature set, so target expression cannot leak back into the cell-state representation used to predict it. The factor stage learns the remaining predictable coexpression component from non-target genes.
+Inside membership `m`, every current recovery-target gene is excluded from the factor-feature set, so target expression cannot leak back into the cell-state representation used to predict it. The factor stage therefore learns cell state only from standardized high-variance **non-target genes**.
 
-The implementation uses iterative masked low-rank reconstruction on standardized high-variance features to estimate cell factors `z_c`. For target gene `g`, only cells whose target value is not masked are used in ridge regression:
+Because the factor-feature matrix contains no masked target coordinates, factor learning does not require iterative masked reconstruction. The implementation computes a direct truncated SVD, using `irlba` for large matrices and an exact SVD only when the smaller matrix dimension is small. This avoids materializing a dense `n_cells x n_cells` Gram matrix for broad memberships.
+
+For target gene `g`, only cells whose target value is not masked are used in ridge regression:
 
 ```text
 beta_g = argmin_beta ||x_g,obs - X_obs beta||^2 + lambda ||beta_factor||^2
@@ -70,7 +72,7 @@ Thus unsupported coexpression cannot force a cell-specific value: `q_g = 0` is a
 
 Importantly, **unmasked zeros remain in the target-gene training data**; the model does not estimate `E[X | X>0]`.
 
-A residual predictive variance is also retained. The deterministic recovered matrix contains predictive means, while `fit$predictive_variance` and `fit$events$prediction_sd` carry uncertainty needed for differential-variability-aware analysis.
+A residual predictive variance is also retained for the masked-factor engine. The deterministic recovered matrix contains predictive means, while `fit$predictive_variance` and `fit$events$prediction_sd` carry uncertainty needed for differential-variability-aware analysis.
 
 ## Matrix workflow
 
@@ -90,7 +92,7 @@ fit <- dropout_killer(
 )
 
 fit$expression
-fit$events[, c("gene", "cell", "recovered", "prediction_sd", "predictability")]
+fit$events[, c("gene", "cell", "recovered", "prediction_sd", "predictability", "shrinkage")]
 fit$predictive_variance
 validate_dropout_result(fit, x)
 ```
@@ -111,6 +113,8 @@ rec <- recover_dropout_expression(
 )
 ```
 
+The historical positional slots of `neighbor_k`, `neighbor_sigma`, `min_positive_neighbors`, `neighbor_positive_only`, `cap_quantile`, and related pre-0.4 workflow arguments are retained. New factor-engine options are appended after the old public argument layout so existing positional calls do not bind numeric values to `recovery_method`.
+
 ## Differential variability
 
 Replacing missing values by conditional means alone necessarily contracts variance. For a latent expression value,
@@ -119,7 +123,7 @@ Replacing missing values by conditional means alone necessarily contracts varian
 Var(lambda_g | Y) = Var_i(E[lambda_ig | Y]) + E_i(Var[lambda_ig | Y])
 ```
 
-The point matrix represents the first term. DropoutKiller therefore keeps the second term as event-level predictive variance. For downstream DV/coexpression analyses, use multiple completed draws rather than treating the mean matrix as error-free:
+The point matrix represents the first term. DropoutKiller therefore keeps the second term as event-level predictive variance when the selected recovery engine defines one. For downstream DV/coexpression analyses, use multiple completed draws rather than treating the mean matrix as error-free:
 
 ```r
 draws <- sample_dropout_expression(fit, n = 20, seed = 1)
@@ -143,6 +147,8 @@ fit_neighbor <- dropout_killer(
 
 `weighted_neighbor_prediction()` is also retained. Positive-only borrowing remains available for reproducibility, but its estimate is the local conditional-positive mean and can be upward-biased for dropout recovery.
 
+The neighbor engine currently has **no calibrated predictive-variance model**. Accordingly, `fit_neighbor$uncertainty_available` is `FALSE`, `fit_neighbor$predictive_variance` is `NULL`, and `sample_dropout_expression(fit_neighbor)` errors instead of silently treating unknown variance as zero.
+
 ## Seurat workflow
 
 ```r
@@ -165,9 +171,9 @@ Recovered values are continuous and are stored as assay data, not raw counts.
 - `build_supercell_membership()`: graph-based membership construction.
 - `local_alra_detect()`: membership-local ALRA-inspired zero detection.
 - `select_dropout_mask()`: sparse high-confidence zero mask.
-- `masked_factor_prediction()`: masked membership-local coexpression prediction.
+- `masked_factor_prediction()`: membership-local non-target coexpression prediction.
 - `recover_dropout_expression()`: selective recovery for a supplied mask.
-- `sample_dropout_expression()`: uncertainty-aware completed-matrix draws.
+- `sample_dropout_expression()`: uncertainty-aware completed-matrix draws for results with uncertainty support.
 - `weighted_neighbor_prediction()`: legacy/comparator neighbor prediction.
 - `dropout_killer()`: end-to-end workflow.
 - `dropout_killer_seurat()`: Seurat wrapper.

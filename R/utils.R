@@ -3,7 +3,7 @@
   if (!ok || length(dim(x)) != 2L) stop("x must be a matrix or Matrix object with genes in rows and cells in columns", call. = FALSE)
   if (nrow(x) < 1L || ncol(x) < 1L) stop("x must contain at least one gene and one cell", call. = FALSE)
   vals <- if (inherits(x, "sparseMatrix")) {
-    if ("x" %in% methods::slotNames(x)) methods::slot(x, "x") else rep.int(1, length(summary(x)$i))
+    if ("x" %in% methods::slotNames(x)) methods::slot(x, "x") else rep.int(1, length(Matrix::summary(x)$i))
   } else as.vector(x)
   if (!is.numeric(vals)) stop("x must contain numeric expression values", call. = FALSE)
   if (anyNA(vals) || (length(vals) && any(!is.finite(vals)))) stop("x contains non-finite values", call. = FALSE)
@@ -72,7 +72,7 @@
 
 .dk_mask_events <- function(mask) {
   if (inherits(mask, "sparseMatrix")) {
-    sm <- summary(mask)
+    sm <- Matrix::summary(mask)
     keep <- if ("x" %in% names(sm)) as.logical(sm$x) else rep(TRUE, nrow(sm))
     return(data.frame(i = sm$i[keep], j = sm$j[keep]))
   }

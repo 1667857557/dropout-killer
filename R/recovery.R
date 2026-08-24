@@ -18,8 +18,9 @@
   }
   n <- nrow(events)
   list(prediction = pred, factor_prediction = rep(NA_real_, n), prediction_sd = rep(NA_real_, n),
-       predictability = rep(NA_real_, n), n_observed_gene = integer(n), factor_rank = integer(n),
-       factor_features = integer(n), factor_iterations = integer(n), factor_converged = logical(n),
+       predictability = rep(NA_real_, n), shrinkage = rep(NA_real_, n),
+       n_observed_gene = integer(n), factor_rank = integer(n), factor_features = integer(n),
+       factor_iterations = integer(n), factor_converged = logical(n),
        recovery_method = rep("neighbor", n), cell_prediction = cp$prediction,
        cell_available = available, n_donors = cp$n_donors, bandwidth = cp$bandwidth)
 }
@@ -27,7 +28,6 @@
 .dk_recover_events <- function(x, events, membership, embedding = NULL,
                                recovery_method = c("masked_factor", "neighbor"),
                                factor_rank = 5L, factor_features = 2000L,
-                               factor_max_iter = 8L, factor_tol = 1e-4,
                                factor_ridge = 1, min_feature_observed = 20L,
                                min_target_observed = 20L,
                                neighbor_k = 30L, neighbor_sigma = NULL,
@@ -38,8 +38,7 @@
   if (recovery_method == "masked_factor") {
     mf <- .dk_masked_factor_predict_events(x, membership, events, factor_rank = factor_rank,
                                            factor_features = factor_features,
-                                           factor_max_iter = factor_max_iter,
-                                           factor_tol = factor_tol, factor_ridge = factor_ridge,
+                                           factor_ridge = factor_ridge,
                                            min_feature_observed = min_feature_observed,
                                            min_target_observed = min_target_observed,
                                            cap_quantile = cap_quantile)
@@ -55,21 +54,20 @@
 #' Selectively recover masked zero events
 #'
 #' The default masked-factor engine treats supplied dropout events as missing,
-#' learns membership-local coexpression factors from the remaining entries, and
-#' predicts each target gene with ridge/GCV shrinkage plus event-level predictive
-#' uncertainty. The previous Gaussian neighbor engine remains available with
-#' \code{recovery_method = "neighbor"}.
+#' learns membership-local coexpression factors from non-target genes, and
+#' predicts each target gene with ridge regression, exact analytic leave-one-out
+#' shrinkage, and event-level predictive uncertainty. The previous Gaussian
+#' neighbor engine remains available with \code{recovery_method = "neighbor"}.
 #'
 #' @export
 recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
-                                       recovery_method = c("masked_factor", "neighbor"),
-                                       factor_rank = 5L, factor_features = 2000L,
-                                       factor_max_iter = 8L, factor_tol = 1e-4,
-                                       factor_ridge = 1, min_feature_observed = 20L,
-                                       min_target_observed = 20L,
                                        neighbor_k = 30L, neighbor_sigma = NULL,
                                        min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
-                                       cap_quantile = NULL, return_details = FALSE) {
+                                       cap_quantile = NULL, return_details = FALSE,
+                                       recovery_method = c("masked_factor", "neighbor"),
+                                       factor_rank = 5L, factor_features = 2000L,
+                                       factor_ridge = 1, min_feature_observed = 20L,
+                                       min_target_observed = 20L) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   membership <- .dk_align_membership(membership, nm$cells)
   recovery_method <- match.arg(recovery_method)
@@ -84,7 +82,6 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   } else events$membership <- integer()
   fit <- .dk_recover_events(x, events, membership, z, recovery_method = recovery_method,
                             factor_rank = factor_rank, factor_features = factor_features,
-                            factor_max_iter = factor_max_iter, factor_tol = factor_tol,
                             factor_ridge = factor_ridge, min_feature_observed = min_feature_observed,
                             min_target_observed = min_target_observed,
                             neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
@@ -102,6 +99,7 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   events$factor_prediction <- fit$factor_prediction
   events$prediction_sd <- fit$prediction_sd
   events$predictability <- fit$predictability
+  events$shrinkage <- fit$shrinkage
   events$n_observed_gene <- fit$n_observed_gene
   events$factor_rank <- fit$factor_rank
   events$factor_features <- fit$factor_features
@@ -114,14 +112,15 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   events$bandwidth <- fit$bandwidth
   events$recovered <- fit$prediction
   events$changed <- ok
-  if (return_details) list(expression = out, events = events) else out
+  if (return_details) list(expression = out, events = events,
+                           uncertainty_available = identical(recovery_method, "masked_factor")) else out
 }
 
 #' Run selective dropout detection and recovery
 #'
 #' High-confidence zero events are detected from membership-local low-rank
 #' structure. By default, recovery then treats those events as missing and learns
-#' a membership-local masked coexpression factor model; observed values are never
+#' a membership-local coexpression factor model; observed values are never
 #' overwritten. The historical neighbor-only engine remains opt-in.
 #'
 #' @export
@@ -129,14 +128,13 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            gamma = 150, k_knn = 5L, approximate = "auto", approx_n = 20000L,
                            rank = "auto", max_rank = 20L, rank_z = 6, quantile_prob = 0.001,
                            threshold = 0.95, min_cells = 8L, min_negative = 3L,
-                           recovery_method = c("masked_factor", "neighbor"),
-                           factor_rank = 5L, factor_features = 2000L,
-                           factor_max_iter = 8L, factor_tol = 1e-4,
-                           factor_ridge = 1, min_feature_observed = 20L,
-                           min_target_observed = 20L,
                            neighbor_k = 30L, neighbor_sigma = NULL,
                            min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
-                           cap_quantile = NULL, seed = 12345L, return_score = FALSE) {
+                           cap_quantile = NULL, seed = 12345L, return_score = FALSE,
+                           recovery_method = c("masked_factor", "neighbor"),
+                           factor_rank = 5L, factor_features = 2000L,
+                           factor_ridge = 1, min_feature_observed = 20L,
+                           min_target_observed = 20L) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   z <- .dk_align_embedding(embedding, nm$cells)
   recovery_method <- match.arg(recovery_method)
@@ -159,7 +157,6 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                             if (recovery_method == "neighbor") z else NULL,
                             recovery_method = recovery_method,
                             factor_rank = factor_rank, factor_features = factor_features,
-                            factor_max_iter = factor_max_iter, factor_tol = factor_tol,
                             factor_ridge = factor_ridge, min_feature_observed = min_feature_observed,
                             min_target_observed = min_target_observed,
                             neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
@@ -181,6 +178,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     events$factor_prediction <- rec$factor_prediction
     events$prediction_sd <- rec$prediction_sd
     events$predictability <- rec$predictability
+    events$shrinkage <- rec$shrinkage
     events$n_observed_gene <- rec$n_observed_gene
     events$factor_rank <- rec$factor_rank
     events$factor_features <- rec$factor_features
@@ -196,22 +194,26 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
   } else {
     events <- det$events[FALSE, , drop = FALSE]
     events$factor_prediction <- numeric(); events$prediction_sd <- numeric(); events$predictability <- numeric()
-    events$n_observed_gene <- integer(); events$factor_rank <- integer(); events$factor_features <- integer()
-    events$factor_iterations <- integer(); events$factor_converged <- logical(); events$recovery_method <- character()
-    events$cell_prediction <- numeric(); events$cell_available <- logical(); events$n_donors <- integer()
-    events$bandwidth <- numeric(); events$recovered <- numeric(); events$changed <- logical()
+    events$shrinkage <- numeric(); events$n_observed_gene <- integer(); events$factor_rank <- integer()
+    events$factor_features <- integer(); events$factor_iterations <- integer(); events$factor_converged <- logical()
+    events$recovery_method <- character(); events$cell_prediction <- numeric(); events$cell_available <- logical()
+    events$n_donors <- integer(); events$bandwidth <- numeric(); events$recovered <- numeric(); events$changed <- logical()
   }
-  pv_ok <- ok & is.finite(rec$prediction_sd) & rec$prediction_sd >= 0
-  predictive_variance <- .dk_sparse_numeric(ev$i[pv_ok], ev$j[pv_ok], rec$prediction_sd[pv_ok]^2,
-                                             nrow(x), ncol(x), dimnames(x))
+  uncertainty_available <- identical(recovery_method, "masked_factor")
+  predictive_variance <- NULL
+  if (uncertainty_available) {
+    pv_ok <- ok & is.finite(rec$prediction_sd) & rec$prediction_sd >= 0
+    predictive_variance <- .dk_sparse_numeric(ev$i[pv_ok], ev$j[pv_ok], rec$prediction_sd[pv_ok]^2,
+                                               nrow(x), ncol(x), dimnames(x))
+  }
   out <- list(expression = expression, membership = membership, membership_fit = membership_fit,
-              mask = mask, events = events, predictive_variance = predictive_variance, detection = det,
+              mask = mask, events = events, predictive_variance = predictive_variance,
+              uncertainty_available = uncertainty_available, detection = det,
               settings = list(gamma = gamma, k_knn = k_knn, approximate = approximate, approx_n = approx_n,
                               rank = rank, max_rank = max_rank, rank_z = rank_z, quantile_prob = quantile_prob,
                               threshold = threshold, min_cells = min_cells, min_negative = min_negative,
                               recovery_method = recovery_method, factor_rank = factor_rank,
-                              factor_features = factor_features, factor_max_iter = factor_max_iter,
-                              factor_tol = factor_tol, factor_ridge = factor_ridge,
+                              factor_features = factor_features, factor_ridge = factor_ridge,
                               min_feature_observed = min_feature_observed,
                               min_target_observed = min_target_observed,
                               neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,

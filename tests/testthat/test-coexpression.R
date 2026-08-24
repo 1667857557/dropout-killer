@@ -35,6 +35,39 @@ test_that("masked factor learns held-out coexpression without using the target v
   expect_lt(sqrt(mean((ev$prediction - truth)^2)), sqrt(mean((baseline - truth)^2)))
   expect_gt(mean(ev$predictability), 0)
   expect_true(all(is.finite(ev$prediction_sd)))
+  expect_true(all(ev$factor_iterations[ev$factor_rank > 0] == 1L))
+  expect_true(all(ev$factor_converged[ev$factor_rank > 0]))
+})
+
+test_that("large factor fixture explicitly exercises truncated irlba", {
+  set.seed(117)
+  n <- 80L; p <- 70L
+  x <- matrix(rexp(p * n, rate = 0.4), nrow = p,
+              dimnames = list(paste0("g", seq_len(p)), paste0("c", seq_len(n))))
+  events <- data.frame(i = 1L, j = 1L, membership = 1L)
+  x[1, 1] <- 0
+  fit <- DropoutKiller:::.dk_membership_factor_scores(
+    x, seq_len(n), events, rank = 5L, feature_max = p - 1L, min_feature_observed = 20L
+  )
+  expect_false(is.null(fit))
+  expect_equal(fit$decomposition, "irlba")
+  expect_equal(fit$n_features, p - 1L)
+})
+
+test_that("rank-deficient factor features discard null singular directions", {
+  n <- 40L
+  state <- seq(-2, 2, length.out = n)
+  features <- vapply(seq_len(9L), function(j) 25 + j * state, numeric(n))
+  x <- rbind(g1 = 5 + state, t(features))
+  rownames(x) <- paste0("g", seq_len(nrow(x))); colnames(x) <- paste0("c", seq_len(n))
+  x[1, 1] <- 0
+  events <- data.frame(i = 1L, j = 1L, membership = 1L)
+  fit <- DropoutKiller:::.dk_membership_factor_scores(
+    x, seq_len(n), events, rank = 5L, feature_max = 9L, min_feature_observed = 20L
+  )
+  expect_false(is.null(fit))
+  expect_equal(fit$decomposition, "svd_exact")
+  expect_equal(fit$rank, 1L)
 })
 
 test_that("uncertainty-aware draws preserve all observed coordinates", {
@@ -46,10 +79,25 @@ test_that("uncertainty-aware draws preserve all observed coordinates", {
                                   factor_features = 2, min_feature_observed = 3,
                                   min_target_observed = 10, return_details = TRUE)
   res <- list(expression = d$expression, events = d$events,
+              uncertainty_available = TRUE,
               settings = list(recovery_method = "masked_factor"))
   class(res) <- "DropoutKillerResult"
   draws <- sample_dropout_expression(res, n = 3, seed = 9)
   observed <- x != 0
   expect_equal(length(draws), 3)
   for (z in draws) expect_equal(z[observed], x[observed])
+})
+
+test_that("uncertainty sampling rejects engines without an uncertainty model", {
+  x <- matrix(c(0, 8, 2), nrow = 1, dimnames = list("g1", c("c1", "c2", "c3")))
+  z <- matrix(c(0, 0.2, 1), ncol = 1, dimnames = list(colnames(x), "PC1"))
+  mask <- Matrix::sparseMatrix(i = 1, j = 1, x = TRUE, dims = dim(x))
+  d <- recover_dropout_expression(x, mask, rep(1, 3), z, neighbor_k = 2,
+                                  return_details = TRUE, recovery_method = "neighbor")
+  res <- list(expression = d$expression, events = d$events,
+              uncertainty_available = FALSE,
+              predictive_variance = NULL,
+              settings = list(recovery_method = "neighbor"))
+  class(res) <- "DropoutKillerResult"
+  expect_error(sample_dropout_expression(res), "unavailable")
 })
