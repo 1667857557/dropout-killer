@@ -59,7 +59,7 @@
   kk <- min(k, length(positive))
   if (kk < 1L) return(NULL)
   scores <- eig$vectors[, seq_len(kk), drop = FALSE]
-  scores <- stats::scale(scores, center = TRUE, scale = TRUE)
+  scores <- base::scale(scores, center = TRUE, scale = TRUE)
   scores[!is.finite(scores)] <- 0
   keep_score <- which(colSums(scores * scores) > 1e-10)
   if (!length(keep_score)) return(NULL)
