@@ -1,72 +1,65 @@
 # DropoutKiller
 
-`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It does not impute an entire expression matrix. It first identifies observed zeros with strong membership-local evidence of technical dropout, then modifies only those events.
-
-Recovery is expression-derived only: **no PPI, pathway, GRN, or other external biological prior is used**.
+`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It detects high-confidence zero events, then modifies only those coordinates. External PPI/pathway/GRN priors are not used.
 
 ## Workflow
 
 ```text
-normalized scRNA-seq expression X (genes x cells)
-                 |
-                 +-----------------------------+
-                 |                             |
-                 v                             v
-        low-dimensional embedding       broad biological strata
-                 |                       (e.g. major cell type)
-                 +-------------+---------------+
-                               |
-                               v
-              SuperCell-style membership construction
-       kNN graph -> walktrap hierarchy -> gamma-controlled cut
-                               |
-                               v
-                     membership-local ALRA
-                               |
-                               v
-          zero gate + negative-tail confidence score
-                               |
-                    only observed X[g,c] = 0
-                               |
-                               v
-                   high-confidence dropout mask
-                               |
-                               v
-        membership-local Gaussian neighbor borrowing
-             distance-derived weights, normalized
-                               |
-                               v
-                    selective replacement only
-                               |
-                               v
-                     recovered expression
+expression X + cell embedding + optional biological strata
+                         |
+                         v
+       SuperCell-style memberships (gamma = 150)
+                         |
+                         v
+        membership-local ALRA zero detection
+                         |
+                         v
+             high-confidence dropout mask M
+                         |
+                         v
+     masked membership-local coexpression factors
+       (M entries are missing; other zeros stay observed)
+                         |
+                         v
+       target-gene ridge regression on cell factors
+                         |
+                         v
+      GCV shrinkage toward membership gene mean
+                         |
+              +----------+----------+
+              |                     |
+              v                     v
+       recovered mean        predictive variance
+              |                     |
+              +----------+----------+
+                         v
+       selective mean matrix + DV-aware draws
 ```
-
-The default membership graining level is `gamma = 150`, giving a target of approximately `n/150` memberships within each hard biological stratum.
 
 ## Recovery model
 
-For a masked event `(g,c)`, donors are restricted to the same membership. For donor cell `j`,
+Inside membership `m`, let `R_gc = 0` only for dropout-mask coordinates and `R_gc = 1` otherwise. The factor stage learns the predictable coexpression component from observed entries:
 
 ```text
-d_cj^2 = ||z_c - z_j||_2^2
-w_cj ∝ exp(-d_cj^2 / sigma_c^2)
+min_{L,Z} sum_{g,c} R_gc (X_gc - mu_g - l_g^T z_c)^2
 ```
 
-By default `sigma_c` is estimated as the median positive distance among the selected neighbors. With `neighbor_positive_only = TRUE`, only cells with observed `X[g,j] > 0` contribute and the weights are renormalized over those donors:
+The implementation uses iterative masked low-rank reconstruction on standardized high-variance features to estimate cell factors `z_c`. For target gene `g`, only cells whose target value is not masked are used in ridge regression:
 
 ```text
-Xhat[g,c] = sum_j w_cj X[g,j] I(X[g,j] > 0) /
-            sum_j w_cj I(X[g,j] > 0)
+beta_g = argmin_beta ||x_g,obs - X_obs beta||^2 + lambda ||beta_factor||^2
 ```
 
-There is no fixed cell/prior mixing coefficient and no biological-prior branch.
+The cell-specific prediction is shrunk toward the membership mean according to analytic GCV improvement over the intercept-only null:
 
-## Installation
-
-```r
-remotes::install_github("1667857557/dropout-killer", upgrade = "never")
+```text
+q_g = max(0, min(1, 1 - GCV_factor / GCV_null))
+Xhat_gc = max(0, mu_g + q_g (Xfactor_gc - mu_g))
 ```
+
+Thus unsupported coexpression cannot force a cell-specific value: when `q_g -> 0`, recovery automatically reduces to the membership mean. Importantly, **unmasked zeros remain in the training data**; the model does not estimate `E[X | X>0]`.
+
+A residual predictive variance is also retained. The deterministic recovered matrix contains predictive means, while `fit$predictive_variance` and `fit$events$prediction_sd` carry uncertainty needed for differential-variability-aware analysis.
 
 ## Matrix workflow
 
@@ -79,34 +72,65 @@ fit <- dropout_killer(
   group = major_cell_type,
   split_by = condition,
   gamma = 150,
-  k_knn = 5,
-  rank = "auto",
-  quantile_prob = 0.001,
-  threshold = 0.95,
-  neighbor_k = 30,
-  neighbor_positive_only = TRUE
+  recovery_method = "masked_factor",
+  factor_rank = 5,
+  factor_features = 2000,
+  factor_ridge = 1
 )
 
-fit
 fit$expression
-fit$events
+fit$events[, c("gene", "cell", "recovered", "prediction_sd", "predictability")]
+fit$predictive_variance
 validate_dropout_result(fit, x)
 ```
 
-If condition-specific states must never borrow from one another, pass condition to `split_by`. If cross-condition borrowing within the same trusted biological state is intended, leave `split_by = NULL`.
+If condition-specific states must never borrow from one another, pass condition to `split_by`. If cross-condition borrowing inside a trusted shared state is intended, leave `split_by = NULL`.
 
-## Direct recovery for a supplied mask
+## Direct recovery for a supplied dropout mask
+
+`embedding` is not required by the default masked-factor engine:
 
 ```r
-recovered <- recover_dropout_expression(
+rec <- recover_dropout_expression(
   x = x,
   mask = dropout_mask,
   membership = membership,
-  embedding = pca,
-  neighbor_k = 30,
-  neighbor_positive_only = TRUE
+  recovery_method = "masked_factor",
+  return_details = TRUE
 )
 ```
+
+## Differential variability
+
+Replacing missing values by conditional means alone necessarily contracts variance. For a latent expression value,
+
+```text
+Var(lambda_g | Y) = Var_i(E[lambda_ig | Y]) + E_i(Var[lambda_ig | Y])
+```
+
+The point matrix represents the first term. DropoutKiller therefore keeps the second term as event-level predictive variance. For downstream DV/coexpression analyses, use multiple completed draws rather than treating the mean matrix as error-free:
+
+```r
+draws <- sample_dropout_expression(fit, n = 20, seed = 1)
+```
+
+Observed entries are identical in every draw; only recovered dropout events vary.
+
+## Legacy/comparator neighbor engine
+
+The previous Gaussian neighbor estimator remains available explicitly:
+
+```r
+fit_neighbor <- dropout_killer(
+  x = x,
+  embedding = pca,
+  membership = membership,
+  recovery_method = "neighbor",
+  neighbor_k = 30
+)
+```
+
+`weighted_neighbor_prediction()` is also retained. Positive-only borrowing remains available for reproducibility, but its estimate is the local conditional-positive mean and can be upward-biased for dropout recovery.
 
 ## Seurat workflow
 
@@ -123,28 +147,27 @@ obj <- dropout_killer_seurat(
 )
 ```
 
-Recovered values are continuous and are stored as **assay data**, not as raw counts.
+Recovered values are continuous and are stored as assay data, not raw counts.
 
 ## Main API
 
 - `build_supercell_membership()`: graph-based membership construction.
-- `local_alra_detect()`: membership-local low-rank zero detection.
-- `select_dropout_mask()`: high-confidence zero-only sparse mask.
-- `weighted_neighbor_prediction()`: membership-local Gaussian neighbor prediction.
-- `recover_dropout_expression()`: selective neighbor-only recovery for a supplied mask.
+- `local_alra_detect()`: membership-local ALRA-inspired zero detection.
+- `select_dropout_mask()`: sparse high-confidence zero mask.
+- `masked_factor_prediction()`: masked membership-local coexpression prediction.
+- `recover_dropout_expression()`: selective recovery for a supplied mask.
+- `sample_dropout_expression()`: uncertainty-aware completed-matrix draws.
+- `weighted_neighbor_prediction()`: legacy/comparator neighbor prediction.
 - `dropout_killer()`: end-to-end workflow.
 - `dropout_killer_seurat()`: Seurat wrapper.
-- `validate_dropout_result()`: validate zero-preserving invariants.
+- `validate_dropout_result()`: selective-recovery invariants.
 
 See `inst/ALGORITHM.md` for the mathematical contract.
 
-## Important trade-offs
+## Statistical boundaries
 
-- Hard `group`/`split_by` boundaries should use trusted broad labels. Over-fragmentation reduces membership size and local low-rank power.
-- `threshold = 0.95` is a null-tail evidence threshold, not an FDR or calibrated posterior probability.
-- Positive-only neighbor borrowing estimates a conditional-positive local mean and can be upward-biased. Set `neighbor_positive_only = FALSE` for the literal all-neighbor Gaussian average.
-- Recovery is one-pass: recovered values are never fed back into membership construction or dropout detection.
-
-## Methodological basis
-
-The membership engine adapts the SuperCell graph/coarse-graining design: kNN graph, walktrap hierarchy, and gamma-controlled coarse graining. The zero gate and automatic-rank logic adapt ALRA's low-rank and negative-tail ideas. The recovery stage is deliberately limited to membership-local, distance-weighted cell borrowing.
+- The dropout detector and recovery model are separate. Recovery never changes the mask.
+- The mean completed matrix is not claimed to preserve full DV by itself; use predictive variance or repeated draws for DV-sensitive downstream work.
+- Factor rank controls only the predictable coexpression component. Residual variation is retained separately rather than forced into the low-rank mean.
+- A gene with no reproducible factor prediction is shrunk toward its membership mean instead of receiving an unsupported coexpression estimate.
+- Recovery is membership-local and never uses PPI/pathway/GRN priors.
