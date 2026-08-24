@@ -458,7 +458,31 @@ and
 
 This is an approximate predictive variance, not a fully calibrated Bayesian posterior.
 
-For the default positive target, multiple completed draws use a Gaussian approximation truncated below zero.
+For the default positive target, repeated completed draws use a Gamma moment match. Given stored predictive mean \(m_{gc}>0\) and variance \(V_{gc}>0\), define
+
+\[
+k_{gc}=\frac{m_{gc}^2}{V_{gc}},
+\qquad
+\theta_{gc}=\frac{V_{gc}}{m_{gc}}.
+\]
+
+Then
+
+\[
+X_{gc}^{(b)}\sim\operatorname{Gamma}(k_{gc},\theta_{gc})
+\]
+
+satisfies
+
+\[
+E[X_{gc}^{(b)}]=m_{gc},
+\qquad
+\operatorname{Var}(X_{gc}^{(b)})=V_{gc},
+\qquad
+X_{gc}^{(b)}>0.
+\]
+
+This preserves the first two predictive moments exactly under the approximation and avoids the mean shift produced by truncating a Gaussian below zero.
 
 ---
 
