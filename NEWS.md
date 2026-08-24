@@ -4,6 +4,7 @@
 - Removed `alpha`, `ppi`, `pathway`, `prior_weights`, `gene_prior`, and `prior_standardize` from recovery APIs.
 - Recovery now uses only membership-constrained Gaussian neighbor borrowing; the effective donor weights are estimated from latent-space distances and renormalized over eligible donors.
 - Removed prior-specific event fields and settings while preserving zero-only replacement, sparse output, and exact preservation of observed non-zero values.
+- Changed the default SuperCell-style membership graining level from `gamma = 20` to `gamma = 150` in both membership construction and the end-to-end workflow.
 
 # DropoutKiller 0.2.0
 
