@@ -18,13 +18,13 @@ expression X + cell embedding + optional biological strata
                          |
                          v
      masked membership-local coexpression factors
-       (M entries are missing; other zeros stay observed)
+   (target genes excluded; M entries are missing)
                          |
                          v
        target-gene ridge regression on cell factors
                          |
                          v
-      GCV shrinkage toward membership gene mean
+       analytic leave-one-out optimal shrinkage
                          |
               +----------+----------+
               |                     |
@@ -38,11 +38,7 @@ expression X + cell embedding + optional biological strata
 
 ## Recovery model
 
-Inside membership `m`, let `R_gc = 0` only for dropout-mask coordinates and `R_gc = 1` otherwise. The factor stage learns the predictable coexpression component from observed entries:
-
-```text
-min_{L,Z} sum_{g,c} R_gc (X_gc - mu_g - l_g^T z_c)^2
-```
+Inside membership `m`, let `R_gc = 0` only for dropout-mask coordinates and `R_gc = 1` otherwise. Every current recovery-target gene is excluded from the factor-feature set, so target expression cannot leak back into the cell-state representation used to predict it. The factor stage learns the remaining predictable coexpression component from non-target genes.
 
 The implementation uses iterative masked low-rank reconstruction on standardized high-variance features to estimate cell factors `z_c`. For target gene `g`, only cells whose target value is not masked are used in ridge regression:
 
@@ -50,14 +46,29 @@ The implementation uses iterative masked low-rank reconstruction on standardized
 beta_g = argmin_beta ||x_g,obs - X_obs beta||^2 + lambda ||beta_factor||^2
 ```
 
-The cell-specific prediction is shrunk toward the membership mean according to analytic GCV improvement over the intercept-only null:
+For fixed ridge penalty, the diagonal of the smoother matrix gives an exact analytic leave-one-out prediction:
 
 ```text
-q_g = max(0, min(1, 1 - GCV_factor / GCV_null))
+yhat_i^(-i) = y_i - (y_i - yhat_i) / (1 - h_ii)
+```
+
+Let `mu_i^(-i)` be the leave-one-out membership mean and
+
+```text
+d_i = yhat_i^(-i) - mu_i^(-i)
+t_i = y_i - mu_i^(-i)
+```
+
+The shrinkage coefficient used for recovery is the squared-error optimum on these held-out predictions:
+
+```text
+q_g = clip(sum_i d_i t_i / sum_i d_i^2, 0, 1)
 Xhat_gc = max(0, mu_g + q_g (Xfactor_gc - mu_g))
 ```
 
-Thus unsupported coexpression cannot force a cell-specific value: when `q_g -> 0`, recovery automatically reduces to the membership mean. Importantly, **unmasked zeros remain in the training data**; the model does not estimate `E[X | X>0]`.
+Thus unsupported coexpression cannot force a cell-specific value: `q_g = 0` is always available and collapses recovery to the membership mean. This requires no explicit CV folds. A separate leave-one-out predictability statistic is stored to summarize improvement over the membership-mean null.
+
+Importantly, **unmasked zeros remain in the target-gene training data**; the model does not estimate `E[X | X>0]`.
 
 A residual predictive variance is also retained. The deterministic recovered matrix contains predictive means, while `fit$predictive_variance` and `fit$events$prediction_sd` carry uncertainty needed for differential-variability-aware analysis.
 
@@ -168,6 +179,7 @@ See `inst/ALGORITHM.md` for the mathematical contract.
 
 - The dropout detector and recovery model are separate. Recovery never changes the mask.
 - The mean completed matrix is not claimed to preserve full DV by itself; use predictive variance or repeated draws for DV-sensitive downstream work.
+- Target genes are excluded from factor-state learning to prevent target-to-predictor leakage.
 - Factor rank controls only the predictable coexpression component. Residual variation is retained separately rather than forced into the low-rank mean.
-- A gene with no reproducible factor prediction is shrunk toward its membership mean instead of receiving an unsupported coexpression estimate.
+- A gene with no held-out predictive gain shrinks toward its membership mean instead of receiving an unsupported coexpression estimate.
 - Recovery is membership-local and never uses PPI/pathway/GRN priors.
