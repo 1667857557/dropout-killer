@@ -144,6 +144,7 @@ build_supercell_membership <- function(embedding, group = NULL, split_by = NULL,
   if (!((is.logical(approximate) && length(approximate) == 1L && !is.na(approximate)) || identical(approximate, "auto"))) stop("approximate must be TRUE, FALSE, or 'auto'", call. = FALSE)
   n <- nrow(z); cells <- rownames(z); if (is.null(cells)) cells <- paste0("cell_", seq_len(n))
   if (anyNA(cells) || any(!nzchar(cells)) || anyDuplicated(cells)) stop("embedding row names must be non-missing and unique", call. = FALSE)
+  has_hard_stratum <- !is.null(group) || !is.null(split_by)
   group <- .dk_align_vector(group, cells, "group")
   split_by <- .dk_align_vector(split_by, cells, "split_by")
   strata <- .dk_stratum(group, split_by, n)
@@ -171,7 +172,8 @@ build_supercell_membership <- function(embedding, group = NULL, split_by = NULL,
   out <- list(membership = membership, membership_table = tab, strata = do.call(rbind, info),
               cell_stratum = cell_stratum, hierarchies = hierarchies, tree_indices = tree_indices,
               settings = list(gamma = gamma, k_knn = as.integer(k_knn), method = method,
-                              approximate = approximate, approx_n = as.integer(approx_n), seed = as.integer(seed)))
+                              approximate = approximate, approx_n = as.integer(approx_n), seed = as.integer(seed),
+                              has_hard_stratum = has_hard_stratum))
   if (return_graph) out$graphs <- graphs
   class(out) <- "DropoutKillerMembership"
   out
