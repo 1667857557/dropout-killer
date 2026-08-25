@@ -23,11 +23,15 @@
        factor_iterations = integer(n), factor_converged = logical(n),
        recovery_method = rep("neighbor", n), target_mode = rep("neighbor", n),
        cell_prediction = cp$prediction, cell_available = available,
-       n_donors = cp$n_donors, bandwidth = cp$bandwidth)
+       n_donors = cp$n_donors, bandwidth = cp$bandwidth,
+       local_positive_mean = rep(NA_real_, n), local_positive_variance = rep(NA_real_, n),
+       local_positive_prevalence = rep(NA_real_, n), effective_donors = rep(NA_real_, n),
+       tree_distance_weighted_mean = rep(NA_real_, n),
+       embedding_distance_weighted_mean = rep(NA_real_, n), geometry = NULL)
 }
 
 .dk_recover_events <- function(x, events, membership, embedding = NULL,
-                               recovery_method = c("masked_factor", "neighbor"),
+                               recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
                                factor_rank = 5L, factor_features = 2000L,
                                factor_ridge = 1, min_feature_observed = 20L,
                                min_target_observed = 20L,
@@ -35,9 +39,15 @@
                                min_positive_neighbors = 1L,
                                neighbor_positive_only = TRUE,
                                cap_quantile = NULL,
-                               factor_target = c("positive", "all_observed")) {
+                               factor_target = c("positive", "all_observed"),
+                               membership_fit = NULL, hard_stratum = NULL,
+                               tree_weight = 0.5, tree_tau = NULL,
+                               local_k = 30L, candidate_k = 100L,
+                               min_effective_donors = 5,
+                               local_info_kappa = 5) {
   recovery_method <- match.arg(recovery_method)
   factor_target <- match.arg(factor_target)
+  n <- nrow(events)
   if (recovery_method == "masked_factor") {
     mf <- .dk_masked_factor_predict_events(
       x, membership, events, factor_rank = factor_rank,
@@ -46,10 +56,34 @@
       min_target_observed = min_target_observed,
       cap_quantile = cap_quantile, target_mode = factor_target
     )
-    n <- nrow(events)
     return(c(mf, list(cell_prediction = rep(NA_real_, n),
-                      cell_available = rep(FALSE, n),
-                      n_donors = integer(n), bandwidth = rep(NA_real_, n))))
+                      cell_available = rep(FALSE, n), n_donors = integer(n),
+                      bandwidth = rep(NA_real_, n), local_positive_mean = rep(NA_real_, n),
+                      local_positive_variance = rep(NA_real_, n),
+                      local_positive_prevalence = rep(NA_real_, n),
+                      effective_donors = rep(NA_real_, n),
+                      tree_distance_weighted_mean = rep(NA_real_, n),
+                      embedding_distance_weighted_mean = rep(NA_real_, n), geometry = NULL)))
+  }
+  if (recovery_method == "tree_local_factor") {
+    if (factor_target != "positive") stop("tree_local_factor implements the positive-conditional recovery target only", call. = FALSE)
+    if (is.null(embedding)) stop("embedding is required for recovery_method='tree_local_factor'", call. = FALSE)
+    tl <- .dk_tree_local_predict_events(
+      x, embedding, membership, events, membership_fit = membership_fit,
+      hard_stratum = hard_stratum, factor_rank = factor_rank,
+      factor_features = factor_features, factor_ridge = factor_ridge,
+      min_feature_observed = min_feature_observed,
+      min_target_observed = min_target_observed,
+      tree_weight = tree_weight, tree_tau = tree_tau,
+      local_k = local_k, candidate_k = candidate_k,
+      min_effective_donors = min_effective_donors,
+      local_info_kappa = local_info_kappa
+    )
+    tl$cell_prediction <- tl$local_positive_mean
+    tl$cell_available <- is.finite(tl$local_positive_mean)
+    tl$n_donors <- tl$n_observed_gene
+    tl$bandwidth <- if (!is.null(tl$geometry)) tl$geometry$bandwidth[events$j] else rep(NA_real_, n)
+    return(tl)
   }
   if (is.null(embedding)) stop("embedding is required for recovery_method='neighbor'", call. = FALSE)
   .dk_neighbor_recover_events(
@@ -60,29 +94,38 @@
 
 #' Selectively recover masked zero events
 #'
-#' The default masked-factor engine treats supplied dropout events as missing,
-#' learns membership-local coexpression factors from non-target genes, and
-#' predicts target magnitude from reliable positive donors. Thus, once a zero
-#' has already been classified as a technical dropout, recovery estimates
-#' `E[X_g | X_g > 0, cell state]` rather than the zero-inflated unconditional
-#' membership mean. Set `factor_target = "all_observed"` to reproduce the
-#' previous target. Observed values are never overwritten.
+#' `tree_local_factor` preserves the SuperCell biological geometry instead of
+#' treating every cell in a final membership as exchangeable. Hard biological
+#' strata remain absolute borrowing boundaries; within a stratum, the retained
+#' walktrap hierarchy and the original embedding assign larger weights to
+#' biologically closer donors. The positive target baseline is therefore
+#' query-specific. Coexpression factors predict only residual expression beyond
+#' that local baseline. `masked_factor` and `neighbor` remain available as
+#' comparison engines. Observed values are never overwritten.
 #'
 #' @export
 recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
                                        neighbor_k = 30L, neighbor_sigma = NULL,
                                        min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
                                        cap_quantile = NULL, return_details = FALSE,
-                                       recovery_method = c("masked_factor", "neighbor"),
+                                       recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
                                        factor_rank = 5L, factor_features = 2000L,
                                        factor_ridge = 1, min_feature_observed = 20L,
                                        min_target_observed = 20L,
-                                       factor_target = c("positive", "all_observed")) {
+                                       factor_target = c("positive", "all_observed"),
+                                       membership_fit = NULL, hard_stratum = NULL,
+                                       tree_weight = 0.5, tree_tau = NULL,
+                                       local_k = 30L, candidate_k = 100L,
+                                       min_effective_donors = 5,
+                                       local_info_kappa = 5) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
+  if (inherits(membership, "DropoutKillerMembership")) {
+    membership_fit <- membership; membership <- membership_fit$membership
+  }
   membership <- .dk_align_membership(membership, nm$cells)
   recovery_method <- match.arg(recovery_method)
   factor_target <- match.arg(factor_target)
-  z <- if (recovery_method == "neighbor") .dk_align_embedding(embedding, nm$cells) else NULL
+  z <- if (recovery_method %in% c("neighbor", "tree_local_factor")) .dk_align_embedding(embedding, nm$cells) else NULL
   if (length(dim(mask)) != 2L || !identical(as.integer(dim(mask)), as.integer(dim(x)))) stop("mask and x dimensions differ", call. = FALSE)
   events <- .dk_mask_events(mask)
   if (nrow(events)) {
@@ -99,7 +142,12 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
     neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
     min_positive_neighbors = min_positive_neighbors,
     neighbor_positive_only = neighbor_positive_only,
-    cap_quantile = cap_quantile, factor_target = factor_target
+    cap_quantile = cap_quantile, factor_target = factor_target,
+    membership_fit = membership_fit, hard_stratum = hard_stratum,
+    tree_weight = tree_weight, tree_tau = tree_tau,
+    local_k = local_k, candidate_k = candidate_k,
+    min_effective_donors = min_effective_donors,
+    local_info_kappa = local_info_kappa
   )
   ok <- fit$prediction > 0 & is.finite(fit$prediction)
   if (inherits(x, "Matrix")) {
@@ -125,29 +173,29 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   events$cell_available <- fit$cell_available
   events$n_donors <- fit$n_donors
   events$bandwidth <- fit$bandwidth
+  events$local_positive_mean <- fit$local_positive_mean
+  events$local_positive_variance <- fit$local_positive_variance
+  events$local_positive_prevalence <- fit$local_positive_prevalence
+  events$effective_donors <- fit$effective_donors
+  events$tree_distance_weighted_mean <- fit$tree_distance_weighted_mean
+  events$embedding_distance_weighted_mean <- fit$embedding_distance_weighted_mean
   events$recovered <- fit$prediction
   events$changed <- ok
-  uncertainty_available <- identical(recovery_method, "masked_factor") &&
+  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor") &&
     (!any(ok) || all(is.finite(fit$prediction_sd[ok]) & fit$prediction_sd[ok] >= 0))
   if (return_details) {
-    list(expression = out, events = events,
-         uncertainty_available = uncertainty_available,
-         factor_target = factor_target)
+    list(expression = out, events = events, uncertainty_available = uncertainty_available,
+         factor_target = factor_target, local_geometry = fit$geometry)
   } else out
 }
 
 #' Run selective dropout detection and recovery
 #'
-#' The default detector keeps membership-local low-rank structure but replaces
-#' the finite-sample-unstable empirical extreme-quantile gate with an
-#' empirical-Bayes symmetric zero-null test. Gene-specific negative-tail
-#' variance is shrunk toward a robust membership center and positive
-#' reconstructed zeros are tested with gene-wise BH correction.
-#'
-#' Recovery then conditions on the selected event being a technical dropout and
-#' predicts positive expression magnitude from membership-local coexpression
-#' factors. Observed values, including unmasked biological zeros, are never
-#' overwritten.
+#' Detection remains separate from recovery. The tree-local engine retains the
+#' full SuperCell walktrap hierarchy generated inside each hard biological
+#' stratum. A final gamma cut defines a high-weight core, not an absolute wall:
+#' nearby sibling memberships can contribute with rapidly decaying hierarchy and
+#' embedding weights, while different hard strata never borrow from one another.
 #'
 #' @export
 dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_by = NULL,
@@ -157,13 +205,17 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            neighbor_k = 30L, neighbor_sigma = NULL,
                            min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
                            cap_quantile = NULL, seed = 12345L, return_score = FALSE,
-                           recovery_method = c("masked_factor", "neighbor"),
+                           recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
                            factor_rank = 5L, factor_features = 2000L,
                            factor_ridge = 1, min_feature_observed = 20L,
                            min_target_observed = 20L,
                            detection_method = c("eb_zero_null", "alra_quantile"),
                            variance_prior_df = 10,
-                           factor_target = c("positive", "all_observed")) {
+                           factor_target = c("positive", "all_observed"),
+                           tree_weight = 0.5, tree_tau = NULL,
+                           local_k = 30L, candidate_k = 100L,
+                           min_effective_donors = 5,
+                           local_info_kappa = 5) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   z <- .dk_align_embedding(embedding, nm$cells)
   recovery_method <- match.arg(recovery_method)
@@ -171,7 +223,11 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
   factor_target <- match.arg(factor_target)
   group <- .dk_align_vector(group, nm$cells, "group")
   split_by <- .dk_align_vector(split_by, nm$cells, "split_by")
+  hard_recovery_stratum <- if (!is.null(group) || !is.null(split_by)) .dk_stratum(group, split_by, ncol(x)) else NULL
   membership_fit <- NULL
+  if (inherits(membership, "DropoutKillerMembership")) {
+    membership_fit <- membership; membership <- membership_fit$membership
+  }
   if (is.null(membership)) {
     membership_fit <- build_supercell_membership(
       z, group = group, split_by = split_by, gamma = gamma,
@@ -197,7 +253,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
   if (nrow(ev)) ev$membership <- membership[ev$j] else ev$membership <- integer()
 
   rec <- .dk_recover_events(
-    x, ev, membership, if (recovery_method == "neighbor") z else NULL,
+    x, ev, membership, if (recovery_method %in% c("neighbor", "tree_local_factor")) z else NULL,
     recovery_method = recovery_method,
     factor_rank = factor_rank, factor_features = factor_features,
     factor_ridge = factor_ridge, min_feature_observed = min_feature_observed,
@@ -205,7 +261,12 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
     min_positive_neighbors = min_positive_neighbors,
     neighbor_positive_only = neighbor_positive_only,
-    cap_quantile = cap_quantile, factor_target = factor_target
+    cap_quantile = cap_quantile, factor_target = factor_target,
+    membership_fit = membership_fit, hard_stratum = hard_recovery_stratum,
+    tree_weight = tree_weight, tree_tau = tree_tau,
+    local_k = local_k, candidate_k = candidate_k,
+    min_effective_donors = min_effective_donors,
+    local_info_kappa = local_info_kappa
   )
   ok <- rec$prediction > 0 & is.finite(rec$prediction)
   if (inherits(x, "Matrix")) {
@@ -236,6 +297,12 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     events$cell_available <- rec$cell_available
     events$n_donors <- rec$n_donors
     events$bandwidth <- rec$bandwidth
+    events$local_positive_mean <- rec$local_positive_mean
+    events$local_positive_variance <- rec$local_positive_variance
+    events$local_positive_prevalence <- rec$local_positive_prevalence
+    events$effective_donors <- rec$effective_donors
+    events$tree_distance_weighted_mean <- rec$tree_distance_weighted_mean
+    events$embedding_distance_weighted_mean <- rec$embedding_distance_weighted_mean
     events$recovered <- rec$prediction
     events$changed <- ok
   } else {
@@ -247,11 +314,14 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     events$factor_converged <- logical(); events$recovery_method <- character()
     events$target_mode <- character(); events$cell_prediction <- numeric()
     events$cell_available <- logical(); events$n_donors <- integer()
-    events$bandwidth <- numeric(); events$recovered <- numeric()
+    events$bandwidth <- numeric(); events$local_positive_mean <- numeric()
+    events$local_positive_variance <- numeric(); events$local_positive_prevalence <- numeric()
+    events$effective_donors <- numeric(); events$tree_distance_weighted_mean <- numeric()
+    events$embedding_distance_weighted_mean <- numeric(); events$recovered <- numeric()
     events$changed <- logical()
   }
 
-  uncertainty_available <- identical(recovery_method, "masked_factor") &&
+  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor") &&
     (!any(ok) || all(is.finite(rec$prediction_sd[ok]) & rec$prediction_sd[ok] >= 0))
   predictive_variance <- NULL
   if (uncertainty_available) {
@@ -264,7 +334,8 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
 
   out <- list(
     expression = expression, membership = membership, membership_fit = membership_fit,
-    mask = mask, events = events, predictive_variance = predictive_variance,
+    local_geometry = rec$geometry, mask = mask, events = events,
+    predictive_variance = predictive_variance,
     uncertainty_available = uncertainty_available, detection = det,
     settings = list(
       gamma = gamma, k_knn = k_knn, approximate = approximate, approx_n = approx_n,
@@ -277,6 +348,10 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
       factor_ridge = factor_ridge,
       min_feature_observed = min_feature_observed,
       min_target_observed = min_target_observed,
+      tree_weight = tree_weight, tree_tau = tree_tau,
+      local_k = local_k, candidate_k = candidate_k,
+      min_effective_donors = min_effective_donors,
+      local_info_kappa = local_info_kappa,
       neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
       min_positive_neighbors = min_positive_neighbors,
       neighbor_positive_only = neighbor_positive_only,
@@ -308,7 +383,7 @@ print.DropoutKillerResult <- function(x, ...) {
   cat(" memberships:", length(unique(x$membership)), "\n")
   cat(" detector:", x$settings$detection_method, "\n")
   cat(" recovery engine:", x$settings$recovery_method, "\n")
-  if (!is.null(x$settings$factor_target) && x$settings$recovery_method == "masked_factor")
+  if (!is.null(x$settings$factor_target) && x$settings$recovery_method %in% c("masked_factor", "tree_local_factor"))
     cat(" recovery target:", x$settings$factor_target, "\n")
   cat(" high-confidence dropout events:", nrow(x$events), "\n")
   cat(" recovered events:", if (nrow(x$events)) sum(x$events$changed) else 0L, "\n")
