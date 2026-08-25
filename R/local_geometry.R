@@ -31,6 +31,14 @@
   factor(paste0("membership_", membership), levels = unique(paste0("membership_", membership)))
 }
 
+.dk_tree_index_for_local_stratum <- function(membership_fit, stratum) {
+  if (is.null(membership_fit) || !length(membership_fit$tree_indices)) return(NULL)
+  ti <- membership_fit$tree_indices
+  if (!is.null(names(ti)) && stratum %in% names(ti)) return(ti[[stratum]])
+  if (length(ti) == 1L) return(ti[[1L]])
+  NULL
+}
+
 .dk_build_local_geometry <- function(embedding, membership, membership_fit = NULL,
                                      hard_stratum = NULL, tree_weight = 0.5,
                                      tree_tau = NULL, local_k = 30L,
@@ -42,25 +50,27 @@
   z <- as.matrix(embedding); n <- nrow(z); cells <- rownames(z)
   if (is.null(cells)) stop("embedding must have cell row names for tree-local recovery", call. = FALSE)
   strata <- .dk_resolve_local_stratum(cells, membership, membership_fit, hard_stratum)
-  ii <- integer(); jj <- integer(); ww <- numeric(); dt_all <- numeric(); de_all <- numeric()
+  i_chunks <- list(); j_chunks <- list(); w_chunks <- list(); dt_chunks <- list(); de_chunks <- list(); nchunk <- 0L
   bandwidth <- rep(NA_real_, n); candidate_count <- integer(n)
   lev <- levels(strata)
   for (s in lev) {
     idx <- which(strata == s); ns <- length(idx)
     if (ns <= 1L) next
     zs <- z[idx, , drop = FALSE]
+    local_membership <- membership[idx]
+    membership_cells <- split(seq_len(ns), as.character(local_membership))
     kq <- min(ns, ctl$candidate_k + 1L)
     nn <- RANN::nn2(data = zs, query = zs, k = kq)
-    tree_index <- NULL
-    if (!is.null(membership_fit) && length(membership_fit$tree_indices)) tree_index <- membership_fit$tree_indices[[s]]
+    tree_index <- .dk_tree_index_for_local_stratum(membership_fit, s)
     cand_list <- vector("list", ns); de_list <- vector("list", ns); dt_list <- vector("list", ns)
     for (a in seq_len(ns)) {
       kn <- nn$nn.idx[a, ]; kn <- kn[kn != a]
-      same_m <- which(membership[idx] == membership[idx[a]])
+      same_m <- membership_cells[[as.character(local_membership[a])]]
       cand <- sort(unique(c(kn, same_m)))
       cand <- cand[cand != a]
       if (!length(cand)) next
-      de <- sqrt(rowSums((zs[cand, , drop = FALSE] - matrix(zs[a, ], nrow = length(cand), ncol = ncol(zs), byrow = TRUE))^2))
+      delta <- zs[cand, , drop = FALSE] - matrix(zs[a, ], nrow = length(cand), ncol = ncol(zs), byrow = TRUE)
+      de <- sqrt(rowSums(delta * delta))
       ord <- order(de, cand)
       cand <- cand[ord]; de <- de[ord]
       pos_de <- de[is.finite(de) & de > 0]
@@ -86,14 +96,25 @@
       w <- exp(-alpha * tree_term - (1 - alpha) * emb_term)
       keep <- is.finite(w) & w > 1e-12
       if (!any(keep)) next
-      q_global <- idx[a]; d_global <- idx[cand[keep]]
-      ii <- c(ii, rep.int(q_global, sum(keep))); jj <- c(jj, d_global); ww <- c(ww, w[keep])
+      nchunk <- nchunk + 1L
+      i_chunks[[nchunk]] <- rep.int(idx[a], sum(keep))
+      j_chunks[[nchunk]] <- idx[cand[keep]]
+      w_chunks[[nchunk]] <- w[keep]
       dt_keep <- dt[keep]; dt_keep[!is.finite(dt_keep)] <- NA_real_
-      dt_all <- c(dt_all, dt_keep); de_all <- c(de_all, de[keep])
+      dt_chunks[[nchunk]] <- dt_keep
+      de_chunks[[nchunk]] <- de[keep]
     }
   }
+  if (nchunk) {
+    ii <- unlist(i_chunks, use.names = FALSE); jj <- unlist(j_chunks, use.names = FALSE)
+    ww <- unlist(w_chunks, use.names = FALSE); dt_all <- unlist(dt_chunks, use.names = FALSE)
+    de_all <- unlist(de_chunks, use.names = FALSE)
+  } else {
+    ii <- integer(); jj <- integer(); ww <- numeric(); dt_all <- numeric(); de_all <- numeric()
+  }
   W <- Matrix::sparseMatrix(i = ii, j = jj, x = ww, dims = c(n, n), dimnames = list(cells, cells))
-  Dtree <- Matrix::sparseMatrix(i = ii[is.finite(dt_all)], j = jj[is.finite(dt_all)], x = dt_all[is.finite(dt_all)],
+  tree_ok <- is.finite(dt_all)
+  Dtree <- Matrix::sparseMatrix(i = ii[tree_ok], j = jj[tree_ok], x = dt_all[tree_ok],
                                 dims = c(n, n), dimnames = list(cells, cells))
   Dembed <- Matrix::sparseMatrix(i = ii, j = jj, x = de_all, dims = c(n, n), dimnames = list(cells, cells))
   list(W = W, tree_distance = Dtree, embedding_distance = Dembed,
@@ -129,6 +150,8 @@
                                                ridge = 1, min_target_observed = 20L,
                                                min_effective_donors = 5,
                                                local_info_kappa = 5) {
+  if (!is.numeric(ridge) || length(ridge) != 1L || !is.finite(ridge) || ridge < 0)
+    stop("factor_ridge must be >= 0", call. = FALSE)
   nq <- length(query)
   ans <- list(prediction = rep(NA_real_, nq), residual_prediction = rep(NA_real_, nq),
               prediction_sd = rep(NA_real_, nq), predictability = numeric(nq),
@@ -148,41 +171,41 @@
     ans$effective_n[u] <- if (length(w) && sum(w * w) > 0) sum(w)^2 / sum(w * w) else 0
     ans$n_donors[u] <- length(donor)
     base_var <- if (is.finite(var_q) && neff_q > 0) var_q / neff_q else 0
+    fallback_var <- if (is.finite(var_q)) max(0, var_q + base_var) else max(0, base_var)
+    fallback <- function() {
+      ans$prediction[u] <<- max(0, mu_q)
+      ans$prediction_sd[u] <<- sqrt(fallback_var)
+      ans$method[u] <<- "tree_local_mean"
+    }
     if (length(donor) < max(as.integer(min_target_observed), 2L) || is.null(scores) || !ncol(scores) ||
         ans$effective_n[u] < min_effective_donors) {
-      ans$prediction[u] <- max(0, mu_q)
-      ans$prediction_sd[u] <- sqrt(max(0, if (is.finite(var_q)) var_q + base_var else base_var))
-      ans$method[u] <- "tree_local_mean"
-      next
+      fallback(); next
     }
     Xo <- cbind(1, scores[donor, , drop = FALSE]); y <- residual[donor]
     p <- ncol(Xo)
-    if (length(donor) < p + 2L) {
-      ans$prediction[u] <- max(0, mu_q); ans$prediction_sd[u] <- sqrt(max(0, base_var)); ans$method[u] <- "tree_local_mean"; next
-    }
-    sw <- sqrt(w / mean(w)); Xw <- Xo * sw; yw <- y * sw
+    if (length(donor) < p + 2L) { fallback(); next }
+    scale_w <- w / mean(w); sw <- sqrt(scale_w); Xw <- Xo * sw; yw <- y * sw
     P <- diag(c(0, rep(ridge, p - 1L)), nrow = p)
     A <- crossprod(Xw) + P
     inv <- tryCatch(solve(A), error = function(e) NULL)
-    if (is.null(inv) || any(!is.finite(inv))) {
-      ans$prediction[u] <- max(0, mu_q); ans$prediction_sd[u] <- sqrt(max(0, base_var)); ans$method[u] <- "tree_local_mean"; next
-    }
+    if (is.null(inv) || any(!is.finite(inv))) { fallback(); next }
     beta <- as.vector(inv %*% crossprod(Xw, yw))
     fitted <- as.vector(Xo %*% beta)
-    hdiag <- w / mean(w) * rowSums((Xo %*% inv) * Xo)
+    hdiag <- scale_w * rowSums((Xo %*% inv) * Xo)
     loo <- y - (y - fitted) / pmax(1 - hdiag, 1e-6)
     den <- sum(w * loo * loo)
     qpred <- if (is.finite(den) && den > 1e-12) sum(w * loo * y) / den else 0
     qpred <- max(0, min(1, qpred))
-    null_sse <- sum(w * y * y); model_sse <- sum(w * (y - qpred * loo)^2)
-    predability <- if (is.finite(null_sse) && null_sse > 0) max(0, min(1, 1 - model_sse / null_sse)) else 0
     qinfo <- if (local_info_kappa > 0) ans$effective_n[u] / (ans$effective_n[u] + local_info_kappa) else 1
     qfinal <- qpred * qinfo
+    null_sse <- sum(w * y * y)
+    final_sse <- sum(w * (y - qfinal * loo)^2)
+    predability <- if (is.finite(null_sse) && null_sse > 0) max(0, min(1, 1 - final_sse / null_sse)) else 0
     xq <- c(1, scores[q, , drop = TRUE]); raw <- sum(xq * beta)
     pred <- max(0, mu_q + qfinal * raw)
-    sigma2 <- if (sum(w) > 0) model_sse / sum(w) else NA_real_
+    sigma2 <- if (sum(w) > 0) final_sse / sum(w) else NA_real_
     if (!is.finite(sigma2) || sigma2 < 0) sigma2 <- if (is.finite(var_q)) var_q else 0
-    meat <- crossprod(Xo, Xo * (w / mean(w))^2)
+    meat <- crossprod(Xo, Xo * scale_w^2)
     hq <- as.numeric(t(xq) %*% inv %*% meat %*% inv %*% xq)
     pv <- sigma2 * (1 + qfinal^2 * max(0, hq)) + base_var
     ans$prediction[u] <- pred; ans$residual_prediction[u] <- raw
@@ -201,7 +224,7 @@
                                           local_k = 30L, candidate_k = 100L,
                                           min_effective_donors = 5,
                                           local_info_kappa = 5) {
-  n_ev <- nrow(events); n <- ncol(x)
+  n_ev <- nrow(events)
   out <- list(
     prediction = rep(NA_real_, n_ev), factor_prediction = rep(NA_real_, n_ev),
     prediction_sd = rep(NA_real_, n_ev), predictability = numeric(n_ev),
@@ -253,7 +276,7 @@
       out$local_positive_mean[qg] <- stats_g$mean[query]
       out$local_positive_variance[qg] <- stats_g$variance[query]
       out$local_positive_prevalence[qg] <- stats_g$prevalence[query]
-      out$effective_donors[qg] <- tg$effective_n
+      out$effective_donors[qg] <- stats_g$effective_n[query]
       for (u in seq_along(query_global)) {
         qcell <- query_global[u]
         wrow <- geometry$W[qcell, , drop = TRUE]
