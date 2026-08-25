@@ -1,138 +1,171 @@
 # DropoutKiller
 
-`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It never rewrites observed non-dropout coordinates and does not use external PPI/pathway/GRN priors.
+`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It never overwrites observed non-dropout coordinates and does not use external PPI/pathway/GRN priors.
 
-Version 0.5 separates the problem explicitly into two statistical stages:
+Version 0.6 keeps detection and recovery as separate statistical problems and adds a hierarchy-aware recovery engine without replacing the validated v0.5 comparator by default.
 
 ```text
-expression X + cell embedding + optional hard biological strata
+expression X + biological embedding + optional hard strata
                          |
                          v
-       SuperCell-style memberships (gamma = 150)
+          SuperCell kNN graph + walktrap hierarchy
                          |
-                         v
-       membership-local low-rank reconstruction
-                         |
-                         v
- empirical-Bayes symmetric biological-zero null
- negative-tail variance shrinkage + gene-wise BH
-                         |
-                         v
-             selective dropout mask M
-                         |
-                         v
-    membership-local non-target coexpression factors
-       (all current target genes are excluded)
-                         |
-                         v
- target-gene positive-conditional ridge prediction
-                         |
-                         v
-       analytic leave-one-out optimal shrinkage
-                         |
-              +----------+----------+
-              |                     |
-              v                     v
-       recovered mean        predictive variance
-              |                     |
-              +----------+----------+
-                         v
-       selective mean matrix + DV-aware draws
+                         +-------------------------+
+                         |                         |
+                         v                         v
+                 final gamma cut            retained tree
+                         |                         |
+                         +------------+------------+
+                                      |
+                                      v
+                        EB zero-null dropout detector
+                                      |
+                                      v
+                             selective dropout mask
+                                      |
+                      +---------------+----------------+
+                      |                                |
+                      v                                v
+             masked_factor                    tree_local_factor
+              comparator                           v0.6 engine
+                                                       |
+                                      tree + embedding donor kernel
+                                                       |
+                                      query-specific positive mean
+                                                       |
+                                      local coexpression residual
+                                                       |
+                                      held-out shrinkage + variance
+                                                       |
+                                                       v
+                                      selective means + Gamma draws
 ```
 
-## Why the detector changed
+## Detection
 
-The historical ALRA-derived detector used a per-gene empirical lower quantile with `quantile_prob = 0.001`. In a membership with `n` cells, that tail contains only `0.001 n` expected observations. For memberships below roughly 1000 cells, the empirical 0.1% quantile is therefore essentially determined by the first one or two order statistics and can be highly unstable.
+The default detector remains `detection_method = "eb_zero_null"`. It replaces the old membership-local empirical `quantile_prob = 0.001` threshold with a finite-sample zero-null model.
 
-The default detector now keeps the useful ALRA idea that biological-zero low-rank reconstruction error is approximately symmetric around zero, but estimates a finite-sample null instead of an extreme empirical quantile.
-
-For gene `g` in one membership, let negative reconstructed values be `z_gc < 0`. Their second moment estimates the zero-null variance:
+For negative low-rank reconstructions of gene `g`,
 
 ```text
-s_g^2 = sum_{c:z_gc<0} z_gc^2 / n_g^-
-```
-
-Because `n_g^-` can be small, this is shrunk toward a robust membership-level variance center `s_0^2`:
-
-```text
-w_g = n_g^- / (n_g^- + nu_0)
+s_g^2 = sum(z_gc^2 : z_gc < 0) / n_g^-
+w_g   = n_g^- / (n_g^- + variance_prior_df)
 s_g,EB^2 = w_g s_g^2 + (1-w_g) s_0^2
 ```
 
-where `nu_0 = variance_prior_df` is the equivalent prior negative-residual sample size.
-
-For an observed zero with positive low-rank reconstruction `z_gc`, the working biological-zero null gives
+and a positive reconstruction at an observed zero is tested by
 
 ```text
 Z_gc = z_gc / s_g,EB
 p_gc = P(N(0,1) >= Z_gc)
 ```
 
-P-values are Benjamini-Hochberg adjusted **within each gene and membership**. Event score is
+with gene-wise BH adjustment inside each membership. `confidence = 1 - q_value`; it is **not** a Bayesian posterior probability. The historical detector remains available as `detection_method = "alra_quantile"`.
+
+## Why retain the SuperCell hierarchy?
+
+A SuperCell membership is only a cut through a walktrap hierarchy:
 
 ```text
-confidence_gc = 1 - q_gc
+biological embedding -> kNN graph -> walktrap tree -> gamma cut
 ```
 
-and is not a Bayesian posterior probability. With the default `threshold = 0.95`, selected events therefore satisfy approximately `q_gc <= 0.05` under the working symmetric zero-null model.
+Treating all cells in the final cut as exchangeable discards information already present in that tree. Version 0.6 therefore keeps the `cluster_walktrap()` hierarchy and a compact tree index inside `DropoutKillerMembership`.
 
-The historical empirical-quantile gate is still available with:
+Hard biological strata and the final membership have different roles:
 
-```r
-detection_method = "alra_quantile"
-```
+- **explicit `group` / `split_by`**: absolute borrowing boundary;
+- **final SuperCell membership**: high-weight local core inside an explicit hard stratum, not an artificial zero-weight wall;
+- **if no hard stratum is explicitly supplied**: the final membership remains the conservative borrowing boundary.
 
-for reproducibility.
+This prevents accidental cross-lineage borrowing in heterogeneous datasets while allowing nearby sibling memberships to contribute when the user has supplied a trusted biological stratum.
 
-## Recovery estimand
+## Tree-local donor weighting
 
-Once an event has already passed the technical-dropout detector, the recovery target changes. The desired magnitude is no longer the unconditional membership mean containing biological zeros. The default factor engine estimates
+For query cell `c` and candidate donor `j` in the same hard stratum, the new engine uses
 
 ```text
-E[X_gc | X_gc > 0, cell state, membership]
+w_cj = exp[-alpha d_tree(c,j)/tau
+           -(1-alpha) d_embed(c,j)^2/(2 h_c^2)]
 ```
 
-from reliable positive donor cells for target gene `g`.
+where:
 
-Unmasked zeros remain in the original matrix and are never modified; they are simply not used to estimate the magnitude of a target that has already been classified as technical dropout. Set
+- `alpha = tree_weight`;
+- `d_tree` is a normalized walktrap lowest-common-ancestor distance;
+- `d_embed` is distance in the original PCA/Harmony/WNN-like biological embedding;
+- `h_c` is an adaptive bandwidth defined by the `local_k`-th candidate neighbor.
 
-```r
-factor_target = "all_observed"
-```
+If hierarchy distance is unavailable for a pair (for example a non-anchor cell in an approximate build), the pair uses the embedding component instead of inventing a tree distance.
 
-to reproduce the previous zero-inflated target model.
+The sparse candidate graph is built once per recovery run and reused across genes.
 
-Inside a membership, every current recovery-target gene is excluded from the factor-feature set, so target expression cannot leak back into the cell-state representation used to predict it. Factor state is learned from standardized high-variance **non-target genes** by truncated SVD (`irlba` on large matrices).
+## Query-specific positive baseline
 
-For target gene `g`, reliable donor values are fit by ridge regression:
+Once a coordinate has already been selected as technical dropout, the positive-expression magnitude baseline becomes query-specific:
 
 ```text
-beta_g = argmin_beta ||x_g,donor - X_donor beta||^2 + lambda ||beta_factor||^2
+mu_gc = sum_j w_cj X_gj / sum_j w_cj
 ```
 
-The ridge smoother provides an exact analytic leave-one-out prediction:
+using reliable positive donors only.
+
+Its Kish effective donor size is
 
 ```text
-yhat_i^(-i) = y_i - (y_i - yhat_i) / (1 - h_ii)
+n_eff,gc = (sum_j w_cj)^2 / sum_j w_cj^2
 ```
 
-Let `mu_i^(-i)` be the leave-one-out positive-donor mean and
+and event diagnostics also retain weighted local positive variance and local positive prevalence.
+
+Unlike a whole-membership positive mean, `mu_gc` varies continuously with biological state inside a membership.
+
+## Local residual coexpression
+
+The tree-local engine does not ask coexpression factors to predict the entire target expression. It first defines leave-one-out local residuals
 
 ```text
-d_i = yhat_i^(-i) - mu_i^(-i)
-t_i = y_i - mu_i^(-i)
+r_gj = X_gj - mu_gj^(-j)
 ```
 
-The factor contribution is shrunk by the held-out squared-error optimum:
+and predicts only what the tree/embedding-local positive baseline cannot explain.
+
+All current target genes are excluded from factor-state learning, preserving the no-target-leakage path
 
 ```text
-q_g = clip(sum_i d_i t_i / sum_i d_i^2, 0, 1)
-Xhat_gc = max(0, mu_g + q_g (Xfactor_gc - mu_g))
+X_cell,-targets -> factor state -> target residual
 ```
 
-Thus unsupported coexpression cannot force a cell-specific value: `q_g = 0` collapses to the positive membership mean.
+For query `c`, residual ridge is locally weighted:
 
-Predictive variance is based on leave-one-out residual MSE rather than in-sample residual variance. For the default positive target, `sample_dropout_expression()` uses a Gamma moment match. For stored predictive mean `m > 0` and variance `v`, it draws
+```text
+beta_gc = (F' W_c F + P)^-1 F' W_c r_g
+```
+
+so biologically nearer donors have greater influence on both the baseline and the coexpression correction.
+
+Held-out residual predictions estimate `q_pred`. Effective residual-donor information contributes
+
+```text
+q_info = n_eff / (n_eff + local_info_kappa)
+q_final = q_pred * q_info
+```
+
+and the deployed prediction is
+
+```text
+Xhat_gc = max(0, mu_gc + q_final * rhat_gc)
+```
+
+If the local factor model has no held-out gain, recovery falls back to the **query-specific local positive mean**, not the whole-membership mean.
+
+## Predictive uncertainty and DV
+
+Tree-local fallback variance retains both positive-expression outcome variance and local-mean estimation uncertainty. For a supported residual model, held-out error is recomputed using the same deployed `q_final` used in the recovered mean, rather than the stronger pre-information-shrinkage coefficient.
+
+The working variance combines residual error, local-mean uncertainty, and weighted factor leverage. It remains an approximate predictive variance and should be checked with held-out coverage.
+
+For positive-conditional recovery, `sample_dropout_expression()` uses Gamma moment matching. For predictive mean `m > 0` and variance `v`,
 
 ```text
 shape = m^2 / v
@@ -140,9 +173,21 @@ scale = v / m
 X ~ Gamma(shape, scale)
 ```
 
-so that `E[X] = m`, `Var(X) = v`, and the draw stays positive. This avoids the mean shift that would be introduced by simply truncating a Gaussian at zero.
+so `E[X] = m`, `Var(X) = v`, and draws remain positive.
+
+For differential variability,
+
+```text
+Var(lambda_g | Y)
+  = Var_i(E[lambda_ig | Y])
+  + E_i(Var(lambda_ig | Y))
+```
+
+so the deterministic mean matrix alone is not a complete DV representation. Use `prediction_sd`, `predictive_variance`, or repeated completed draws for DV/covariance sensitivity analysis.
 
 ## Matrix workflow
+
+The v0.6 engine is introduced as a **parallel benchmark engine** first; `masked_factor` remains the default until independent oracle/full-thinning benchmarks establish superiority.
 
 ```r
 library(DropoutKiller)
@@ -156,97 +201,113 @@ fit <- dropout_killer(
   detection_method = "eb_zero_null",
   variance_prior_df = 10,
   threshold = 0.95,
-  recovery_method = "masked_factor",
+  recovery_method = "tree_local_factor",
   factor_target = "positive",
+  tree_weight = 0.5,
+  local_k = 30,
+  candidate_k = 100,
+  min_effective_donors = 5,
+  local_info_kappa = 5,
   factor_rank = 5,
   factor_features = 2000,
   factor_ridge = 1
 )
 
 fit$expression
-fit$events[, c("gene", "cell", "q_value", "recovered",
-               "prediction_sd", "predictability", "shrinkage")]
+fit$membership_fit$hierarchies
+fit$local_geometry$W
+fit$events[, c(
+  "gene", "cell", "q_value", "recovered",
+  "local_positive_mean", "local_positive_prevalence",
+  "effective_donors", "predictability", "shrinkage",
+  "prediction_sd"
+)]
 fit$predictive_variance
 validate_dropout_result(fit, x)
 ```
 
-If condition-specific states must never borrow from one another, pass condition to `split_by`. If cross-condition borrowing inside a trusted shared state is intended, leave `split_by = NULL`.
-
-## Direct recovery for a supplied dropout mask
-
-If the mask is already trusted, detection can be bypassed:
+## Direct recovery for a trusted mask
 
 ```r
+membership_fit <- build_supercell_membership(
+  embedding = pca,
+  group = major_cell_type,
+  split_by = condition,
+  gamma = 150
+)
+
 rec <- recover_dropout_expression(
   x = x,
   mask = dropout_mask,
-  membership = membership,
-  recovery_method = "masked_factor",
+  membership = membership_fit,
+  embedding = pca,
+  recovery_method = "tree_local_factor",
   factor_target = "positive",
   return_details = TRUE
 )
 ```
 
-`embedding` is not required by the masked-factor engine.
+If only a bare membership vector is supplied and no explicit hard stratum is provided, tree-local recovery conservatively stays within that final membership. To permit borrowing across sibling memberships, provide a trusted hard stratum via the full `DropoutKillerMembership` object or `hard_stratum` in direct recovery.
 
-Historical positional slots are retained. New 0.5 controls are appended after the 0.4 public API.
+## Event diagnostics
 
-## Differential variability
+Tree-local events include:
 
-Replacing missing values by conditional means alone contracts variance. For latent expression,
+- `local_positive_mean`
+- `local_positive_variance`
+- `local_positive_prevalence`
+- `effective_donors` (Kish size of the **positive baseline** donor weights)
+- `n_observed_gene` / `n_donors` (residual-model donor count)
+- `tree_distance_weighted_mean`
+- `embedding_distance_weighted_mean`
+- `factor_prediction`
+- `predictability`
+- `shrinkage`
+- `prediction_sd`
+- `recovery_method` (`tree_local_mean`, `tree_local_factor`, or `unavailable`)
 
-```text
-Var(lambda_g | Y)
-  = Var_i(E[lambda_ig | Y])
-  + E_i(Var[lambda_ig | Y])
-```
+## Required benchmark before default promotion
 
-The deterministic mean matrix contains only the first component. The masked-factor engine therefore stores event-level `prediction_sd` and sparse `predictive_variance`. For DV, covariance, or coexpression analysis, propagate uncertainty with repeated completed draws:
+Recovery must be validated with the same oracle masks across component ablations:
+
+1. positive membership mean;
+2. embedding-only kernel mean;
+3. tree-only weighted mean;
+4. tree + embedding weighted mean;
+5. current `masked_factor`;
+6. local mean + residual factor;
+7. full tree-local weighted residual factor.
+
+Required scenarios include MCAR positive masking, original-UMI count strata, Binomial-zero, and full binomial thinning followed by re-normalization, PCA, SuperCell reconstruction, detection, and recovery.
+
+Report RMSE, MAE, bias, Pearson/CCC, interval coverage, gene-variance error, distributional distance, tree-distance strata, effective-donor strata, and biological-state strata. A post-recovery increase in correlation is not independent validation because coexpression participates in prediction.
+
+## Comparator engines
+
+Current masked-factor comparator:
 
 ```r
-draws <- sample_dropout_expression(fit, n = 20, seed = 1)
-```
-
-Observed coordinates are identical in every draw.
-
-The completed mean matrix should not be treated as an error-free raw-count matrix for DE, trajectory, or network inference. Recovered values are continuous conditional-expression estimates.
-
-## Validation contract
-
-A larger post-recovery correlation is not independent evidence that recovery was correct, because the same coexpression structure was used to predict the missing value. Validation should use held-out data:
-
-1. pseudo-mask reliable observed positives and test predictive likelihood/error;
-2. preferably perform count-level binomial/Poisson thinning so newly created zeros have known technical origin;
-3. compare DV/covariance on repeated draws rather than only the mean matrix;
-4. evaluate detection recall and mask stability separately from recovery accuracy.
-
-## Legacy/comparator engines
-
-Historical detection:
-
-```r
-fit_old_detect <- dropout_killer(
-  x, pca,
-  detection_method = "alra_quantile",
-  quantile_prob = 0.001
+fit_masked_factor <- dropout_killer(
+  x = x,
+  embedding = pca,
+  group = major_cell_type,
+  recovery_method = "masked_factor",
+  factor_target = "positive"
 )
 ```
 
-Historical Gaussian neighbor recovery:
+Historical Gaussian neighbor comparator:
 
 ```r
 fit_neighbor <- dropout_killer(
   x = x,
   embedding = pca,
   membership = membership,
-  recovery_method = "neighbor",
-  neighbor_k = 30
+  recovery_method = "neighbor"
 )
 ```
 
-`weighted_neighbor_prediction()` is retained. Positive-only neighbor borrowing estimates a local conditional-positive mean, so it is a useful comparator when the masked coordinate is known to have been positive, but it must not be generalized to arbitrary natural zeros.
-
-The neighbor engine has no calibrated predictive-variance model; `uncertainty_available` is therefore `FALSE` and `sample_dropout_expression()` rejects neighbor results.
+The neighbor engine has no calibrated predictive-variance model, so `uncertainty_available = FALSE` and uncertainty-aware sampling rejects it.
 
 ## Seurat workflow
 
@@ -263,20 +324,6 @@ obj <- dropout_killer_seurat(
 )
 ```
 
-Recovered values are continuous and are stored as assay data, not raw counts.
+Recovered values are continuous normalized-expression estimates and belong in assay data, not raw integer counts. Do not treat the completed mean matrix as an error-free count matrix for DE, trajectory, or network inference.
 
-## Main API
-
-- `build_supercell_membership()`: graph-based membership construction with canonical labels.
-- `local_alra_detect()`: low-rank zero detection; finite-sample EB null by default.
-- `local_alra_score()`: sparse `1 - q` evidence matrix.
-- `select_dropout_mask()`: sparse high-confidence zero mask.
-- `masked_factor_prediction()`: target-leakage-free membership-local coexpression prediction.
-- `recover_dropout_expression()`: selective recovery for a supplied mask.
-- `sample_dropout_expression()`: uncertainty-aware completed-matrix draws.
-- `weighted_neighbor_prediction()`: legacy/comparator neighbor prediction.
-- `dropout_killer()`: end-to-end workflow.
-- `dropout_killer_seurat()`: Seurat wrapper.
-- `validate_dropout_result()`: selective-recovery invariants.
-
-See `inst/ALGORITHM.md` for the mathematical contract.
+See `inst/ALGORITHM.md` for the detector/v0.5 factor contract and `inst/TREE_LOCAL_RECOVERY.md` for the v0.6 hierarchy-aware recovery contract.
