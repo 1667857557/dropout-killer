@@ -111,15 +111,12 @@
   Dtree <- Matrix::sparseMatrix(i = ii[tree_ok], j = jj[tree_ok], x = dt_all[tree_ok],
                                 dims = c(n, n), dimnames = list(cells, cells))
   Dembed <- Matrix::sparseMatrix(i = ii, j = jj, x = de_all, dims = c(n, n), dimnames = list(cells, cells))
-  embed_mean <- rep(NA_real_, n)
-  ok <- total_weight > 0
+  embed_mean <- rep(NA_real_, n); ok <- total_weight > 0
   if (any(ok)) embed_mean[ok] <- as.numeric(Matrix::rowSums(W * Dembed))[ok] / total_weight[ok]
   tree_mean <- rep(NA_real_, n)
   if (length(tree_ok) && any(tree_ok)) {
-    tree_mask <- Dtree != 0
-    tree_w <- W * tree_mask
-    tree_den <- as.numeric(Matrix::rowSums(tree_w))
-    tok <- tree_den > 0
+    tree_mask <- Dtree != 0; tree_w <- W * tree_mask
+    tree_den <- as.numeric(Matrix::rowSums(tree_w)); tok <- tree_den > 0
     if (any(tok)) tree_mean[tok] <- as.numeric(Matrix::rowSums(W * Dtree))[tok] / tree_den[tok]
   }
   list(W = W, W2 = W2, total_weight = total_weight,
@@ -154,8 +151,10 @@
   W <- geometry$W; W2 <- geometry$W2; if (is.null(W2)) W2 <- W * W
   total_w <- geometry$total_weight; if (is.null(total_w)) total_w <- as.numeric(Matrix::rowSums(W))
   pos <- x > 0
-  num <- as.matrix(x %*% Matrix::t(W)); den <- as.matrix(pos %*% Matrix::t(W))
-  ss <- as.matrix((x * x) %*% Matrix::t(W)); den2 <- as.matrix(pos %*% Matrix::t(W2))
+  Wt <- geometry$Wt; if (is.null(Wt)) Wt <- Matrix::t(W)
+  W2t <- geometry$W2t; if (is.null(W2t)) W2t <- Matrix::t(W2)
+  num <- as.matrix(x %*% Wt); den <- as.matrix(pos %*% Wt)
+  ss <- as.matrix((x * x) %*% Wt); den2 <- as.matrix(pos %*% W2t)
   mu <- matrix(NA_real_, nrow(x), ncol(x)); ok <- den > 0; mu[ok] <- num[ok] / den[ok]
   neff <- matrix(0, nrow(x), ncol(x)); nok <- den2 > 0; neff[nok] <- den[nok]^2 / den2[nok]
   var_num <- ss - 2 * mu * num + mu * mu * den
@@ -216,19 +215,15 @@
   Xq <- cbind(1, scores[query, , drop = FALSE]); raw <- as.vector(Xq %*% beta)
   pred <- pmax(mu_q + qfinal * raw, 0)
   Wqd <- as.matrix(W[query, donor, drop = FALSE])
-  ans$n_donors <- rowSums(Wqd > 0)
-  ans$effective_n <- neff_q
-  null_sse <- as.numeric(Wqd %*% (y * y))
-  cross_term <- as.numeric(Wqd %*% (y * loo))
+  ans$n_donors <- rowSums(Wqd > 0); ans$effective_n <- neff_q
+  null_sse <- as.numeric(Wqd %*% (y * y)); cross_term <- as.numeric(Wqd %*% (y * loo))
   loo_sse <- as.numeric(Wqd %*% (loo * loo))
-  final_sse <- null_sse - 2 * qfinal * cross_term + qfinal^2 * loo_sse
-  final_sse <- pmax(final_sse, 0)
+  final_sse <- pmax(null_sse - 2 * qfinal * cross_term + qfinal^2 * loo_sse, 0)
   wsum <- rowSums(Wqd)
   predability <- numeric(nq); pok <- supported & is.finite(null_sse) & null_sse > 0
   predability[pok] <- pmax(0, pmin(1, 1 - final_sse[pok] / null_sse[pok]))
-  sigma2 <- rep(NA_real_, nq); sok <- supported & wsum > 0
-  sigma2[sok] <- final_sse[sok] / wsum[sok]
-  sigma2[!is.finite(sigma2) | sigma2 < 0] <- var_q[!is.finite(sigma2) | sigma2 < 0]
+  sigma2 <- rep(NA_real_, nq); sok <- supported & wsum > 0; sigma2[sok] <- final_sse[sok] / wsum[sok]
+  bad_sigma <- !is.finite(sigma2) | sigma2 < 0; sigma2[bad_sigma] <- var_q[bad_sigma]
   meat <- crossprod(Xo, Xo * scale_w^2); M <- inv %*% meat %*% inv
   hq <- rowSums((Xq %*% M) * Xq)
   pv <- sigma2 * (1 + qfinal^2 * pmax(hq, 0)) + base_var
@@ -273,25 +268,25 @@
     min_effective_donors, local_info_kappa
   )
   events$block <- geometry$block_id[events$j]
+  event_by_block <- split(seq_len(n_ev), events$block)
   batch_size <- 256L
-  for (b in unique(events$block)) {
-    cells <- which(geometry$block_id == b); qev <- which(events$block == b); evb <- events[qev, , drop = FALSE]
+  for (b in names(event_by_block)) {
+    qev <- event_by_block[[b]]; cells <- which(geometry$block_id == b); evb <- events[qev, , drop = FALSE]
     local_events <- evb; local_events$j <- match(evb$j, cells)
     fit <- .dk_membership_factor_scores(
       x, cells, local_events, rank = factor_rank, feature_max = factor_features,
       min_feature_observed = min_feature_observed
     )
     scores <- if (is.null(fit)) NULL else fit$scores
-    Wb <- geometry$W[cells, cells, drop = FALSE]
-    geob <- list(W = Wb, W2 = geometry$W2[cells, cells, drop = FALSE], total_weight = geometry$total_weight[cells])
-    genes <- unique(evb$i)
+    Wb <- geometry$W[cells, cells, drop = FALSE]; W2b <- geometry$W2[cells, cells, drop = FALSE]
+    geob <- list(W = Wb, W2 = W2b, Wt = Matrix::t(Wb), W2t = Matrix::t(W2b), total_weight = geometry$total_weight[cells])
+    gene_index <- split(seq_len(nrow(evb)), as.character(evb$i))
+    genes <- as.integer(names(gene_index))
     for (start in seq.int(1L, length(genes), by = batch_size)) {
       gset <- genes[start:min(length(genes), start + batch_size - 1L)]
-      xb <- x[gset, cells, drop = FALSE]
-      sb <- .dk_local_gene_stats_batch(xb, geob)
+      xb <- x[gset, cells, drop = FALSE]; sb <- .dk_local_gene_stats_batch(xb, geob)
       for (kk in seq_along(gset)) {
-        g <- gset[kk]
-        qg0 <- which(evb$i == g); qg <- qev[qg0]
+        g <- gset[kk]; qg0 <- gene_index[[as.character(g)]]; qg <- qev[qg0]
         query_global <- evb$j[qg0]; query <- match(query_global, cells)
         xg <- as.numeric(x[g, cells])
         stats_g <- list(mean = sb$mean[kk, ], variance = sb$variance[kk, ],
