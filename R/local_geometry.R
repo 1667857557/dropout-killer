@@ -17,7 +17,11 @@
 }
 
 .dk_resolve_local_stratum <- function(cells, membership, membership_fit = NULL, hard_stratum = NULL) {
-  if (!is.null(hard_stratum)) return(.dk_align_vector(hard_stratum, cells, "hard_stratum"))
+  if (!is.null(hard_stratum)) {
+    s <- .dk_align_vector(hard_stratum, cells, "hard_stratum")
+    s <- as.character(s)
+    return(factor(s, levels = unique(s)))
+  }
   if (!is.null(membership_fit) && !is.null(membership_fit$cell_stratum)) {
     s <- membership_fit$cell_stratum
     if (!is.null(names(s))) s <- s[cells]
@@ -197,40 +201,53 @@
                                           min_effective_donors = 5,
                                           local_info_kappa = 5) {
   n_ev <- nrow(events); n <- ncol(x)
-  out <- list(prediction = rep(NA_real_, n_ev), factor_prediction = rep(NA_real_, n_ev),
-              prediction_sd = rep(NA_real_, n_ev), predictability = numeric(n_ev),
-              shrinkage = numeric(n_ev), n_observed_gene = integer(n_ev),
-              factor_rank = integer(n_ev), factor_features = integer(n_ev),
-              factor_iterations = integer(n_ev), factor_converged = logical(n_ev),
-              recovery_method = rep("unavailable", n_ev), target_mode = rep("positive", n_ev),
-              local_positive_mean = rep(NA_real_, n_ev), local_positive_variance = rep(NA_real_, n_ev),
-              local_positive_prevalence = rep(NA_real_, n_ev), effective_donors = numeric(n_ev),
-              tree_distance_weighted_mean = rep(NA_real_, n_ev), embedding_distance_weighted_mean = rep(NA_real_, n_ev))
+  out <- list(
+    prediction = rep(NA_real_, n_ev), factor_prediction = rep(NA_real_, n_ev),
+    prediction_sd = rep(NA_real_, n_ev), predictability = numeric(n_ev),
+    shrinkage = numeric(n_ev), n_observed_gene = integer(n_ev),
+    factor_rank = integer(n_ev), factor_features = integer(n_ev),
+    factor_iterations = integer(n_ev), factor_converged = logical(n_ev),
+    recovery_method = rep("unavailable", n_ev), target_mode = rep("positive", n_ev),
+    local_positive_mean = rep(NA_real_, n_ev), local_positive_variance = rep(NA_real_, n_ev),
+    local_positive_prevalence = rep(NA_real_, n_ev), effective_donors = numeric(n_ev),
+    tree_distance_weighted_mean = rep(NA_real_, n_ev),
+    embedding_distance_weighted_mean = rep(NA_real_, n_ev)
+  )
   if (!n_ev) return(c(out, list(geometry = NULL)))
-  geometry <- .dk_build_local_geometry(embedding, membership, membership_fit, hard_stratum,
-                                       tree_weight, tree_tau, local_k, candidate_k,
-                                       min_effective_donors, local_info_kappa)
+  geometry <- .dk_build_local_geometry(
+    embedding, membership, membership_fit, hard_stratum,
+    tree_weight, tree_tau, local_k, candidate_k,
+    min_effective_donors, local_info_kappa
+  )
   stratum <- geometry$cell_stratum
   events$stratum <- stratum[events$j]
   for (s in unique(events$stratum)) {
     cells <- which(stratum == s); qev <- which(events$stratum == s); evs <- events[qev, , drop = FALSE]
     local_events <- evs; local_events$j <- match(evs$j, cells)
-    fit <- .dk_membership_factor_scores(x, cells, local_events, rank = factor_rank,
-                                        feature_max = factor_features,
-                                        min_feature_observed = min_feature_observed)
+    fit <- .dk_membership_factor_scores(
+      x, cells, local_events, rank = factor_rank, feature_max = factor_features,
+      min_feature_observed = min_feature_observed
+    )
     scores <- if (is.null(fit)) NULL else fit$scores
     Ws <- geometry$W[cells, cells, drop = FALSE]
     for (g in unique(evs$i)) {
-      qg0 <- which(evs$i == g); qg <- qev[qg0]; query_global <- evs$j[qg0]; query <- match(query_global, cells)
-      xg <- as.numeric(x[g, cells]); stats_g <- .dk_local_gene_stats(xg, list(W = Ws))
-      tg <- .dk_weighted_local_residual_target(xg, stats_g, scores, Ws, query,
-                                               ridge = factor_ridge,
-                                               min_target_observed = min_target_observed,
-                                               min_effective_donors = min_effective_donors,
-                                               local_info_kappa = local_info_kappa)
-      out$prediction[qg] <- tg$prediction; out$factor_prediction[qg] <- tg$residual_prediction
-      out$prediction_sd[qg] <- tg$prediction_sd; out$predictability[qg] <- tg$predictability
-      out$shrinkage[qg] <- tg$shrinkage; out$n_observed_gene[qg] <- tg$n_donors
+      qg0 <- which(evs$i == g); qg <- qev[qg0]
+      query_global <- evs$j[qg0]; query <- match(query_global, cells)
+      xg <- as.numeric(x[g, cells])
+      stats_g <- .dk_local_gene_stats(xg, list(W = Ws))
+      tg <- .dk_weighted_local_residual_target(
+        xg, stats_g, scores, Ws, query,
+        ridge = factor_ridge,
+        min_target_observed = min_target_observed,
+        min_effective_donors = min_effective_donors,
+        local_info_kappa = local_info_kappa
+      )
+      out$prediction[qg] <- tg$prediction
+      out$factor_prediction[qg] <- tg$residual_prediction
+      out$prediction_sd[qg] <- tg$prediction_sd
+      out$predictability[qg] <- tg$predictability
+      out$shrinkage[qg] <- tg$shrinkage
+      out$n_observed_gene[qg] <- tg$n_donors
       out$recovery_method[qg] <- tg$method
       out$local_positive_mean[qg] <- stats_g$mean[query]
       out$local_positive_variance[qg] <- stats_g$variance[query]
@@ -238,7 +255,8 @@
       out$effective_donors[qg] <- tg$effective_n
       for (u in seq_along(query_global)) {
         qcell <- query_global[u]
-        wrow <- geometry$W[qcell, , drop = TRUE]; nz <- which(as.numeric(wrow) > 0)
+        wrow <- geometry$W[qcell, , drop = TRUE]
+        nz <- which(as.numeric(wrow) > 0)
         if (length(nz)) {
           wv <- as.numeric(wrow[nz]); sw <- sum(wv)
           if (sw > 0) {
