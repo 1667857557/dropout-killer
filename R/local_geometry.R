@@ -51,10 +51,11 @@
   if (is.null(cells)) stop("embedding must have cell row names for tree-local recovery", call. = FALSE)
   strata <- .dk_resolve_local_stratum(cells, membership, membership_fit, hard_stratum)
   block <- interaction(strata, factor(membership, levels = unique(membership)), drop = TRUE, lex.order = TRUE)
+  block_id <- as.integer(block)
   i_chunks <- list(); j_chunks <- list(); w_chunks <- list(); dt_chunks <- list(); de_chunks <- list(); nchunk <- 0L
   bandwidth <- rep(NA_real_, n); candidate_count <- integer(n)
-  for (b in levels(block)) {
-    idx <- which(block == b); nb <- length(idx)
+  for (bid in seq_len(nlevels(block))) {
+    idx <- which(block_id == bid); nb <- length(idx)
     if (nb <= 1L) next
     zb <- z[idx, , drop = FALSE]
     k_use <- min(nb - 1L, ctl$candidate_k)
@@ -124,7 +125,7 @@
        tree_distance_weighted_mean = tree_mean,
        embedding_distance_weighted_mean = embed_mean,
        bandwidth = bandwidth, candidate_count = candidate_count,
-       cell_stratum = as.character(strata), block_id = as.character(block), control = ctl)
+       cell_stratum = as.character(strata), block_id = block_id, control = ctl)
 }
 
 .dk_local_gene_stats <- function(xg, geometry) {
@@ -267,12 +268,13 @@
     tree_weight, tree_tau, local_k, candidate_k,
     min_effective_donors, local_info_kappa
   )
-  events$block <- geometry$block_id[events$j]
-  event_by_block <- split(seq_len(n_ev), events$block)
+  event_block <- geometry$block_id[events$j]
+  event_by_block <- split(seq_len(n_ev), event_block)
   batch_size <- 256L
   for (b in names(event_by_block)) {
-    qev <- event_by_block[[b]]; cells <- which(geometry$block_id == b); evb <- events[qev, , drop = FALSE]
-    local_events <- evb; local_events$j <- match(evb$j, cells)
+    bid <- as.integer(b); qev <- event_by_block[[b]]; cells <- which(geometry$block_id == bid)
+    ev_i <- events$i[qev]; ev_j <- events$j[qev]
+    local_events <- data.frame(i = ev_i, j = match(ev_j, cells))
     fit <- .dk_membership_factor_scores(
       x, cells, local_events, rank = factor_rank, feature_max = factor_features,
       min_feature_observed = min_feature_observed
@@ -280,14 +282,14 @@
     scores <- if (is.null(fit)) NULL else fit$scores
     Wb <- geometry$W[cells, cells, drop = FALSE]; W2b <- geometry$W2[cells, cells, drop = FALSE]
     geob <- list(W = Wb, W2 = W2b, Wt = Matrix::t(Wb), W2t = Matrix::t(W2b), total_weight = geometry$total_weight[cells])
-    gene_index <- split(seq_len(nrow(evb)), as.character(evb$i))
+    gene_index <- split(seq_along(ev_i), ev_i)
     genes <- as.integer(names(gene_index))
     for (start in seq.int(1L, length(genes), by = batch_size)) {
       gset <- genes[start:min(length(genes), start + batch_size - 1L)]
       xb <- x[gset, cells, drop = FALSE]; sb <- .dk_local_gene_stats_batch(xb, geob)
       for (kk in seq_along(gset)) {
         g <- gset[kk]; qg0 <- gene_index[[as.character(g)]]; qg <- qev[qg0]
-        query_global <- evb$j[qg0]; query <- match(query_global, cells)
+        query_global <- ev_j[qg0]; query <- match(query_global, cells)
         xg <- as.numeric(x[g, cells])
         stats_g <- list(mean = sb$mean[kk, ], variance = sb$variance[kk, ],
                         effective_n = sb$effective_n[kk, ], prevalence = sb$prevalence[kk, ],
