@@ -28,12 +28,14 @@ test_that("embedding-local weights decrease with biological projection distance"
   expect_gt(w[2], w[4])
   expect_gt(w[4], w[5])
   expect_equal(w[1], 0)
+  expect_equal(geom$W2, geom$W * geom$W)
+  expect_equal(geom$total_weight, as.numeric(Matrix::rowSums(geom$W)))
 })
 
 test_that("hard biological strata remain absolute borrowing boundaries", {
   z <- cbind(PC1 = seq(0, 1, length.out = 8), PC2 = rep(0, 8))
   rownames(z) <- paste0("c", 1:8)
-  membership <- setNames(rep(1:2, each = 4), rownames(z))
+  membership <- setNames(rep(1L, 8), rownames(z))
   strata <- setNames(rep(c("A", "B"), each = 4), rownames(z))
   geom <- DropoutKiller:::.dk_build_local_geometry(
     z, membership, hard_stratum = strata, tree_weight = 0,
@@ -45,6 +47,23 @@ test_that("hard biological strata remain absolute borrowing boundaries", {
   expect_equal(sum(as.numeric(geom$W[1:4, 5:8])), 0)
   expect_equal(sum(as.numeric(geom$W[5:8, 1:4])), 0)
   expect_equal(geom$cell_stratum, rep(c("A", "B"), each = 4))
+})
+
+test_that("final membership is the recovery borrowing block even inside one hard stratum", {
+  z <- cbind(PC1 = seq(0, 1, length.out = 8), PC2 = rep(0, 8))
+  rownames(z) <- paste0("c", 1:8)
+  membership <- setNames(rep(1:2, each = 4), rownames(z))
+  strata <- setNames(rep("A", 8), rownames(z))
+  geom <- DropoutKiller:::.dk_build_local_geometry(
+    z, membership, hard_stratum = strata, tree_weight = 0,
+    local_k = 3, candidate_k = 7, min_effective_donors = 1,
+    local_info_kappa = 1
+  )
+  expect_gt(sum(as.numeric(geom$W[1:4, 1:4])), 0)
+  expect_gt(sum(as.numeric(geom$W[5:8, 5:8])), 0)
+  expect_equal(sum(as.numeric(geom$W[1:4, 5:8])), 0)
+  expect_equal(sum(as.numeric(geom$W[5:8, 1:4])), 0)
+  expect_equal(length(unique(geom$block_id)), 2L)
 })
 
 test_that("final memberships remain safe borrowing boundaries when no hard stratum is supplied", {
@@ -66,9 +85,26 @@ test_that("final memberships remain safe borrowing boundaries when no hard strat
   }
 })
 
+test_that("batched local gene statistics equal scalar statistics", {
+  set.seed(12)
+  W <- matrix(runif(36), 6, 6); diag(W) <- 0
+  W <- Matrix::Matrix(W, sparse = TRUE)
+  geom <- list(W = W, W2 = W * W, total_weight = as.numeric(Matrix::rowSums(W)),
+               Wt = Matrix::t(W), W2t = Matrix::t(W * W))
+  x <- matrix(rexp(18), nrow = 3)
+  x[cbind(c(1, 2, 3), c(1, 3, 5))] <- 0
+  bat <- DropoutKiller:::.dk_local_gene_stats_batch(x, geom)
+  for (g in seq_len(nrow(x))) {
+    one <- DropoutKiller:::.dk_local_gene_stats(as.numeric(x[g, ]), geom)
+    expect_equal(bat$mean[g, ], one$mean, tolerance = 1e-10)
+    expect_equal(bat$variance[g, ], one$variance, tolerance = 1e-10)
+    expect_equal(bat$effective_n[g, ], one$effective_n, tolerance = 1e-10)
+    expect_equal(bat$prevalence[g, ], one$prevalence, tolerance = 1e-10)
+  }
+})
+
 test_that("tree-local recovery uses a query-specific positive baseline", {
   cells <- paste0("c", 1:12)
-  genes <- paste0("g", 1:6)
   z <- cbind(PC1 = seq(0, 5.5, length.out = 12), PC2 = sin(seq_len(12)) / 20)
   rownames(z) <- cells
   x <- rbind(
@@ -99,8 +135,14 @@ test_that("tree-local recovery uses a query-specific positive baseline", {
   expect_equal(rec$events$recovered[1], rec$events$local_positive_mean[1])
   expect_true(is.finite(rec$events$effective_donors[1]) && rec$events$effective_donors[1] > 0)
   expect_true(is.finite(rec$events$prediction_sd[1]) && rec$events$prediction_sd[1] >= 0)
-  local_stats <- DropoutKiller:::.dk_local_gene_stats(as.numeric(x[1, ]), list(W = rec$local_geometry$W))
+  local_stats <- DropoutKiller:::.dk_local_gene_stats(
+    as.numeric(x[1, ]),
+    list(W = rec$local_geometry$W, W2 = rec$local_geometry$W2,
+         total_weight = rec$local_geometry$total_weight)
+  )
   expect_equal(rec$events$effective_donors[1], local_stats$effective_n[6])
+  expect_equal(rec$events$embedding_distance_weighted_mean[1],
+               rec$local_geometry$embedding_distance_weighted_mean[6])
   expect_lt(abs(rec$events$recovered[1] - truth), max(abs(range(x[1, x[1, ] > 0]) - truth)))
 })
 
@@ -118,6 +160,27 @@ test_that("tree-local mean fallback retains positive-expression outcome variance
   expect_equal(fit$method[1], "tree_local_mean")
   expect_true(is.finite(stats_g$variance[1]) && stats_g$variance[1] > 0)
   expect_gt(fit$prediction_sd[1]^2, stats_g$variance[1])
+})
+
+test_that("one gene-level residual model predicts multiple dropout queries", {
+  set.seed(13)
+  n <- 14
+  W <- matrix(0, n, n)
+  for (i in seq_len(n)) for (j in seq_len(n)) if (i != j) W[i, j] <- exp(-abs(i - j) / 3)
+  W <- Matrix::Matrix(W, sparse = TRUE)
+  scores <- cbind(f1 = scale(seq_len(n))[, 1], f2 = scale(sin(seq_len(n) / 2))[, 1])
+  xg <- 2 + 0.5 * scores[, 1] - 0.2 * scores[, 2]
+  query <- c(4L, 10L); xg[query] <- 0
+  stats_g <- DropoutKiller:::.dk_local_gene_stats(xg, list(W = W))
+  fit <- DropoutKiller:::.dk_weighted_local_residual_target(
+    xg, stats_g, scores, W, query = query,
+    ridge = 1, min_target_observed = 5L,
+    min_effective_donors = 1, local_info_kappa = 1
+  )
+  expect_length(fit$prediction, 2L)
+  expect_true(all(is.finite(fit$prediction)))
+  expect_true(all(fit$n_donors > 0))
+  expect_true(all(fit$shrinkage >= 0 & fit$shrinkage <= 1))
 })
 
 test_that("tree-local ridge rejects invalid penalties", {
