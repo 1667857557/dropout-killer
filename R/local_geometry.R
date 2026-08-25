@@ -22,7 +22,8 @@
     s <- as.character(s)
     return(factor(s, levels = unique(s)))
   }
-  if (!is.null(membership_fit) && !is.null(membership_fit$cell_stratum)) {
+  has_hard <- !is.null(membership_fit) && isTRUE(membership_fit$settings$has_hard_stratum)
+  if (has_hard && !is.null(membership_fit$cell_stratum)) {
     s <- membership_fit$cell_stratum
     if (!is.null(names(s))) s <- s[cells]
     if (length(s) == length(cells) && !anyNA(s)) return(factor(as.character(s), levels = unique(as.character(s))))
