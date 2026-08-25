@@ -223,6 +223,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
   factor_target <- match.arg(factor_target)
   group <- .dk_align_vector(group, nm$cells, "group")
   split_by <- .dk_align_vector(split_by, nm$cells, "split_by")
+  hard_recovery_stratum <- if (!is.null(group) || !is.null(split_by)) .dk_stratum(group, split_by, ncol(x)) else NULL
   membership_fit <- NULL
   if (inherits(membership, "DropoutKillerMembership")) {
     membership_fit <- membership; membership <- membership_fit$membership
@@ -261,7 +262,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     min_positive_neighbors = min_positive_neighbors,
     neighbor_positive_only = neighbor_positive_only,
     cap_quantile = cap_quantile, factor_target = factor_target,
-    membership_fit = membership_fit,
+    membership_fit = membership_fit, hard_stratum = hard_recovery_stratum,
     tree_weight = tree_weight, tree_tau = tree_tau,
     local_k = local_k, candidate_k = candidate_k,
     min_effective_donors = min_effective_donors,
