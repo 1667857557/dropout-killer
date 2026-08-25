@@ -2,22 +2,24 @@
 
 ## Statistical target
 
-For a selected technical-dropout event `(g,c)`, version 0.6 adds a recovery engine targeting
+For a selected technical-dropout event `(g,c)`, version 0.6 targets
 
 \[
-E[X_{gc}\mid X_{gc}>0,\;\mathcal T,\;z_c,\;X_{c,-g},\;R,\;s_c],
+E[X_{gc}\mid X_{gc}>0,\;\mathcal T,\;z_c,\;X_{c,-g},\;R,\;m_c,\;s_c],
 \]
 
-where `T` is the retained SuperCell walktrap hierarchy, `z_c` is the biological embedding, `R` is the reliable-coordinate mask, and `s_c` is a hard biological stratum. The final gamma membership is treated as a high-weight tree cut, not as an assumption that every cell in that membership is exchangeable.
+where `T` is the retained SuperCell walktrap hierarchy, `z_c` is the biological embedding, `R` is the reliable-coordinate mask, `m_c` is the final SuperCell membership, and `s_c` is an optional harder biological stratum.
+
+The final membership is the recovery borrowing block. Tree and embedding distances determine continuous donor importance **inside** that block.
 
 ## Information hierarchy
 
 ```text
 hard biological stratum
         >
-walktrap hierarchy
+final SuperCell membership
         >
-final gamma cut
+walktrap hierarchy within membership
         >
 continuous embedding distance
         >
@@ -26,7 +28,7 @@ positive target support
 non-target coexpression residual
 ```
 
-Different hard strata have exactly zero donor weight. Within a stratum, nearby sibling memberships can contribute when they are close in the retained hierarchy/embedding.
+A donor outside the final membership has exactly zero recovery weight. An explicit hard biological stratum may further split a membership, but never expands borrowing beyond the membership.
 
 ## Tree distance
 
@@ -36,11 +38,11 @@ For two hierarchy leaves `c` and `j`, let `LCA(c,j)` be their lowest common ance
 d_T(c,j)=\frac{\log |\mathrm{subtree}(LCA(c,j))|}{\log n_s}\in[0,1].
 \]
 
-Small early-merged subtrees therefore have small distance. Cells in disconnected hierarchy components receive maximal tree distance. Approximate SuperCell builds retain the anchor hierarchy; pairs without exact tree leaves use the embedding term only.
+Small early-merged subtrees therefore have small distance. Approximate SuperCell builds retain the anchor hierarchy; pairs without exact tree leaves use the embedding term only.
 
-## Joint donor kernel
+## Membership-local donor kernel
 
-For cells in the same hard stratum:
+For cells in the same final recovery block:
 
 \[
 w_{cj}=\exp\left[
@@ -49,16 +51,16 @@ w_{cj}=\exp\left[
 \right],
 \]
 
-where `alpha = tree_weight`, `tau_T = tree_tau`, and `h_c` is the distance to the `local_k`-th candidate neighbor. If tree distance is unavailable for a pair, its effective tree weight is zero instead of fabricating a hierarchy distance.
+where `alpha = tree_weight`, `tau_T = tree_tau`, and `h_c` is the distance to the `local_k`-th candidate neighbor inside the membership.
 
-Candidate donors are the union of the query's final membership and embedding-nearest neighbors inside the hard stratum. The sparse weight matrix is built once and reused across genes.
+The candidate set is restricted to the final membership and optionally capped by `candidate_k`. The sparse weight matrix is built once per recovery run. Its elementwise square, row-weight sums, adaptive bandwidths, and cell-level weighted tree/embedding diagnostics are cached once and reused across genes.
 
 ## Query-specific positive baseline
 
-For reliable positive donors
+For reliable positive donors inside the membership,
 
 \[
-D_{gc}=\{j:X_{gj}>0,R_{gj}=1,s_j=s_c\},
+D_{gc}=\{j:m_j=m_c,\;X_{gj}>0,\;R_{gj}=1\},
 \]
 
 the local baseline is
@@ -83,11 +85,27 @@ s_{gc}^2=\frac{\sum_jw_{cj}(X_{gj}-\mu_{gc})^2}{W_1-W_2/W_1},
 
 with `W1=sum(w)` and `W2=sum(w^2)`.
 
-Local positive prevalence is also stored:
+Local positive prevalence is
 
 \[
 \pi_{gc}^{local}=\frac{\sum_jw_{cj}I(X_{gj}>0)}{\sum_jw_{cj}}.
 \]
+
+For engineering efficiency, these quantities are computed for target genes in batches using matrix multiplication:
+
+\[
+N=XW^T,\qquad D=BW^T,\qquad S_2=X^{\circ2}W^T,\qquad D_2=BW^{\circ2T},
+\]
+
+where `B=I(X>0)`. Then
+
+\[
+\mu=N\oslash D,
+\qquad
+n_{eff}=D^{\circ2}\oslash D_2.
+\]
+
+This removes per-event local-statistic loops.
 
 ## Leave-one-out local residuals
 
@@ -105,25 +123,43 @@ X_{c,-T}\rightarrow f_c\rightarrow\widehat r_{gc},
 
 never `X_gc -> factor -> Xhat_gc`.
 
-## Query-weighted residual ridge
+## One residual model per gene and membership
 
-For a query cell, positive residual donors are fit with
+The original tree-local implementation fit a separate weighted ridge for every dropout event. With millions of high-confidence events, runtime therefore scaled with event count even though cells were already partitioned into small memberships.
 
-\[
-\widehat\beta_{gc}=(F^TW_cF+P)^{-1}F^TW_cr_g,
-\]
+The batched implementation fits one residual model per target gene and recovery block.
 
-where the intercept is unpenalized. Because `W_c` depends on the query cell, biologically closer donors have more influence on the residual model as well as on the positive baseline.
-
-The weighted linear smoother permits analytic leave-one-out residual predictions. Relative to a zero-residual null, factor contribution is shrunk by the weighted held-out squared-error optimum
+For target gene `g`, let
 
 \[
-q_{gc}^{pred}=\mathrm{clip}_{[0,1]}
-\frac{\sum_jw_{cj}\widehat r_{gj}^{(-j)}r_{gj}}
-{\sum_jw_{cj}(\widehat r_{gj}^{(-j)})^2}.
+Q_g=\{c:(g,c)\text{ is a selected dropout event in the membership}\}.
 \]
 
-Local information contributes an additional shrinkage
+Donor importance is aggregated over the actual target query cells:
+
+\[
+\bar w_{gj}=\sum_{c\in Q_g}w_{cj}.
+\]
+
+This retains the principle that donors close to the dropout queries contribute more, but avoids fitting the same gene separately for every query cell.
+
+The residual ridge is
+
+\[
+\widehat\beta_g=(F^T\bar W_gF+P)^{-1}F^T\bar W_gr_g,
+\]
+
+where the intercept is unpenalized and `P` contains the ridge penalty on factor coefficients.
+
+The weighted linear smoother provides analytic leave-one-out residual predictions. A gene-level held-out factor coefficient is
+
+\[
+q_g^{pred}=\mathrm{clip}_{[0,1]}
+\frac{\sum_j\bar w_{gj}\widehat r_{gj}^{(-j)}r_{gj}}
+{\sum_j\bar w_{gj}(\widehat r_{gj}^{(-j)})^2}.
+\]
+
+Query-specific local information then supplies
 
 \[
 q_{gc}^{info}=\frac{n_{eff,gc}}{n_{eff,gc}+\kappa},
@@ -132,7 +168,7 @@ q_{gc}^{info}=\frac{n_{eff,gc}}{n_{eff,gc}+\kappa},
 so
 
 \[
-q_{gc}=q_{gc}^{pred}q_{gc}^{info}.
+q_{gc}=q_g^{pred}q_{gc}^{info}.
 \]
 
 The final recovery is
@@ -141,14 +177,16 @@ The final recovery is
 \widehat X_{gc}=\max\{0,\mu_{gc}^{local,+}+q_{gc}\widehat r_{gc}\}.
 \]
 
-If coexpression has no local held-out gain, the model collapses to the query-specific local positive mean rather than the whole-membership mean.
+If coexpression has no held-out gain, the model collapses to the query-specific local positive mean rather than the whole-membership mean.
 
 ## Predictive uncertainty
 
-The local residual variance is estimated from weighted held-out residual error. Local-mean estimation uncertainty scales with `1/n_eff`, and query factor uncertainty uses weighted ridge leverage. The working predictive variance is
+For a given gene-level residual model, the deployed shrinkage remains query-specific because `n_eff` varies by query. Therefore held-out residual SSE is evaluated for each query's actual `q_gc` using its local donor weights without refitting the ridge.
+
+Local-mean estimation uncertainty scales with `1/n_eff`, and factor uncertainty uses the gene-level weighted ridge leverage. The working predictive variance is
 
 \[
-V_{gc}\approx\widehat\sigma_{g,LOO}^2(1+q_{gc}^2h_{gc})+\frac{s_{gc,local}^2}{n_{eff,gc}}.
+V_{gc}\approx\widehat\sigma_{g,LOO,c}^2(1+q_{gc}^2h_{gc})+\frac{s_{gc,local}^2}{n_{eff,gc}}.
 \]
 
 This remains an approximate predictive variance and must be checked by held-out coverage.
@@ -161,18 +199,46 @@ X_{gc}^{(b)}\sim Gamma\left(\frac{m_{gc}^2}{V_{gc}},\frac{V_{gc}}{m_{gc}}\right)
 
 where the second parameter is scale. Therefore the sampled mean and variance equal the stored predictive moments while remaining positive.
 
+## Computational contract
+
+For each final membership block:
+
+```text
+build W once
+cache W^2 and cell-level geometry summaries
+compute factor scores once
+batch target-gene local statistics
+for each target gene:
+    fit one residual ridge
+    predict every dropout query for that gene
+index predictions back into the event table
+```
+
+If `E` is the number of selected dropout coordinates, `G_t` is the number of target genes, `n_m` is membership size, and `K` is factor rank, the expensive regression work changes from approximately
+
+\[
+O(E\,n_mK^2)
+\]
+
+to approximately
+
+\[
+O(G_t\,n_mK^2),
+\]
+
+plus batched matrix multiplications and final event indexing. Event count no longer determines the number of ridge solves.
+
 ## Required benchmark before default promotion
 
-`tree_local_factor` is introduced as a parallel engine, not immediately promoted over `masked_factor`. The same oracle masks must compare:
+`tree_local_factor` remains a benchmark engine until independent validation establishes superiority. The same oracle masks must compare:
 
 1. positive membership mean;
 2. embedding-only kernel mean;
 3. tree-only weighted mean;
 4. tree + embedding weighted mean;
 5. current masked factor;
-6. local mean + residual factor;
-7. tree-local weighted residual factor.
+6. tree-local mean + gene-level residual factor.
 
-Benchmarks must include MCAR positive masking, original-UMI count strata, Binomial-zero, and full binomial thinning followed by re-normalization/PCA/SuperCell reconstruction. Report RMSE, MAE, bias, Pearson/CCC, prediction-interval coverage, gene-variance error, distributional distance, tree-distance strata, effective-donor strata, and B-cell biological strata. A post-recovery rise in coexpression is not independent validation because coexpression participates in prediction.
+Benchmarks must include random observed-positive masking, original-UMI count strata, Binomial-zero, and full binomial thinning followed by re-normalization/PCA/SuperCell reconstruction. Report RMSE, MAE, bias, Pearson/CCC, prediction-interval coverage, gene-variance error, distributional distance, tree-distance strata, effective-donor strata, and biological strata.
 
 The engine should become default only if it improves held-out recovery while preserving bias, calibration, differential variability, and hard biological boundaries across repeated random seeds.
