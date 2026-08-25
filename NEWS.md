@@ -1,13 +1,16 @@
 # DropoutKiller 0.6.0
 
-- Preserved the full `cluster_walktrap()` hierarchy inside `DropoutKillerMembership` instead of discarding it after the gamma cut. Exact builds now retain per-stratum hierarchy and a cached tree index; approximate builds retain the anchor hierarchy and fall back to embedding-only weighting when a queried cell has no exact tree leaf.
+- Preserved the full `cluster_walktrap()` hierarchy inside `DropoutKillerMembership` instead of discarding it after the gamma cut. Exact builds retain per-stratum hierarchy and a cached tree index; approximate builds retain the anchor hierarchy and fall back to embedding-only weighting when a queried cell has no exact tree leaf.
 - Added `recovery_method = "tree_local_factor"` directly to the original recovery dispatch. No public recovery function is overridden or redefined outside the existing call chain.
-- Replaced the equal-weight positive membership fallback for the new engine with a query-specific positive baseline. Donor weights combine hard-stratum eligibility, normalized walktrap-tree proximity, and adaptive embedding-space distance. Final membership remains a high-weight core but is no longer an artificial zero-weight wall inside a shared hard biological stratum.
-- Added Kish effective donor size, weighted local variance, local positive prevalence, tree-distance and embedding-distance diagnostics for every tree-local recovery event.
-- Changed coexpression refinement for the new engine to predict residual expression after subtracting leave-one-out local biological baselines. Query-specific weighted ridge gives biologically nearer positive donors more influence on the residual model as well as on the baseline.
-- Added held-out local factor shrinkage and an effective-donor information shrinkage term so weakly supported query neighborhoods collapse to the query-specific local mean rather than the whole-membership mean.
+- Replaced the equal-weight positive membership fallback with a query-specific positive baseline. The final SuperCell membership is now the recovery borrowing block; walktrap-tree proximity and adaptive embedding distance determine continuous donor weights inside that block, while explicit hard strata may further split it.
+- Added Kish effective donor size, weighted local variance, local positive prevalence, tree-distance and embedding-distance diagnostics for tree-local recovery events.
+- Changed coexpression refinement to predict residual expression after subtracting leave-one-out local biological baselines. Donor influence is weighted by biological proximity to the actual dropout query cells.
+- Reworked the initial event-wise tree-local ridge implementation for large high-confidence masks. Geometry now caches `W`, `W^2`, row weights, bandwidths, and cell-level distance summaries once; local gene statistics are evaluated in batches with matrix multiplication.
+- Replaced one weighted ridge solve per dropout event with one residual ridge per target gene × final membership. Query-cell donor weights are aggregated for the gene-level fit, while `n_eff` keeps query-specific information shrinkage and uncertainty. Event count now affects indexing/output rather than the number of regression solves.
+- Pre-indexed events by recovery block and target gene, removing repeated whole-event scans inside the gene loop.
+- Added held-out factor shrinkage and effective-donor information shrinkage so weakly supported query neighborhoods collapse to the query-specific local mean rather than the whole-membership mean.
 - Preserved the existing `masked_factor` and `neighbor` engines for component ablation and backward compatibility. Historical positional argument slots remain unchanged; tree-local controls are appended after the 0.5 API.
-- Added regression tests for retained hierarchy, symmetric tree distance, distance-decaying embedding weights, absolute hard-stratum boundaries, query-specific local-mean fallback, uncertainty, and exact preservation of observed coordinates.
+- Added regression tests for retained hierarchy, symmetric tree distance, membership-local borrowing, cached geometry, batched-vs-scalar local statistics, multi-query gene-level residual prediction, uncertainty, and exact preservation of observed coordinates.
 
 # DropoutKiller 0.5.0
 
