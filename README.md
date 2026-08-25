@@ -29,11 +29,11 @@ expression X + biological embedding + optional hard strata
              masked_factor                    tree_local_factor
               comparator                           v0.6 engine
                                                        |
-                                      tree + embedding donor kernel
+                                     membership-local donor kernel
                                                        |
                                       query-specific positive mean
                                                        |
-                                      local coexpression residual
+                                   gene-level coexpression residual
                                                        |
                                       held-out shrinkage + variance
                                                        |
@@ -72,17 +72,17 @@ biological embedding -> kNN graph -> walktrap tree -> gamma cut
 
 Treating all cells in the final cut as exchangeable discards information already present in that tree. Version 0.6 therefore keeps the `cluster_walktrap()` hierarchy and a compact tree index inside `DropoutKillerMembership`.
 
-Hard biological strata and the final membership have different roles:
+For production recovery the final membership is the computational and biological borrowing block:
 
-- **explicit `group` / `split_by`**: absolute borrowing boundary;
-- **final SuperCell membership**: high-weight local core inside an explicit hard stratum, not an artificial zero-weight wall;
-- **if no hard stratum is explicitly supplied**: the final membership remains the conservative borrowing boundary.
+- **explicit `group` / `split_by`**: additional absolute biological boundary;
+- **final SuperCell membership**: absolute recovery borrowing block;
+- **walktrap hierarchy + original embedding**: continuous weighting **inside** that membership.
 
-This prevents accidental cross-lineage borrowing in heterogeneous datasets while allowing nearby sibling memberships to contribute when the user has supplied a trusted biological stratum.
+This matches the intended use of `gamma`: first restrict recovery to a small biologically coherent cell set, then let closer cells contribute more than distant cells without repeatedly searching the whole hard stratum.
 
 ## Tree-local donor weighting
 
-For query cell `c` and candidate donor `j` in the same hard stratum, the new engine uses
+For query cell `c` and candidate donor `j` inside the same final membership, the engine uses
 
 ```text
 w_cj = exp[-alpha d_tree(c,j)/tau
@@ -94,11 +94,11 @@ where:
 - `alpha = tree_weight`;
 - `d_tree` is a normalized walktrap lowest-common-ancestor distance;
 - `d_embed` is distance in the original PCA/Harmony/WNN-like biological embedding;
-- `h_c` is an adaptive bandwidth defined by the `local_k`-th candidate neighbor.
+- `h_c` is an adaptive bandwidth defined by the `local_k`-th candidate neighbor inside the membership.
 
-If hierarchy distance is unavailable for a pair (for example a non-anchor cell in an approximate build), the pair uses the embedding component instead of inventing a tree distance.
+If hierarchy distance is unavailable for a pair, the pair uses the embedding component instead of inventing a tree distance.
 
-The sparse candidate graph is built once per recovery run and reused across genes.
+The sparse weight matrix is built once per final membership block and reused across all target genes. `W^2`, row-weight sums, and cell-level tree/embedding distance diagnostics are cached at the same time.
 
 ## Query-specific positive baseline
 
@@ -120,7 +120,9 @@ and event diagnostics also retain weighted local positive variance and local pos
 
 Unlike a whole-membership positive mean, `mu_gc` varies continuously with biological state inside a membership.
 
-## Local residual coexpression
+For speed, local means, variances, positive prevalence, and `n_eff` are evaluated in gene batches with matrix multiplication rather than by looping over every dropout event.
+
+## Batched residual coexpression
 
 The tree-local engine does not ask coexpression factors to predict the entire target expression. It first defines leave-one-out local residuals
 
@@ -136,32 +138,59 @@ All current target genes are excluded from factor-state learning, preserving the
 X_cell,-targets -> factor state -> target residual
 ```
 
-For query `c`, residual ridge is locally weighted:
+The original implementation fit one weighted ridge for every dropout event, which made runtime scale with millions of high-confidence coordinates. The batched implementation instead fits **one residual model per target gene and final membership**.
+
+Let `Q_g` be the dropout query cells for gene `g`. Donor influence in the single gene-level ridge is still determined by proximity to the actual query cells through the aggregate weight
 
 ```text
-beta_gc = (F' W_c F + P)^-1 F' W_c r_g
+wbar_gj = sum_{c in Q_g} w_cj
 ```
 
-so biologically nearer donors have greater influence on both the baseline and the coexpression correction.
-
-Held-out residual predictions estimate `q_pred`. Effective residual-donor information contributes
+and
 
 ```text
-q_info = n_eff / (n_eff + local_info_kappa)
-q_final = q_pred * q_info
+beta_g = (F' Wbar_g F + P)^-1 F' Wbar_g r_g
+```
+
+so donors close to the target dropout cells receive more influence, but the same gene is not refit separately for every event.
+
+Held-out residual predictions estimate a gene-level `q_pred`. Query-specific local information contributes
+
+```text
+q_info,gc = n_eff,gc / (n_eff,gc + local_info_kappa)
+q_final,gc = q_pred,g * q_info,gc
 ```
 
 and the deployed prediction is
 
 ```text
-Xhat_gc = max(0, mu_gc + q_final * rhat_gc)
+Xhat_gc = max(0, mu_gc + q_final,gc * rhat_gc)
 ```
 
-If the local factor model has no held-out gain, recovery falls back to the **query-specific local positive mean**, not the whole-membership mean.
+If the factor model has no held-out gain, recovery falls back to the **query-specific local positive mean**, not the whole-membership mean.
+
+## Why the batched implementation is faster
+
+For a membership containing `n_m` cells, biological geometry is constructed once. Recovery then scales approximately with:
+
+```text
+one W_m construction
++ batched gene x cell local statistics
++ one small ridge solve per target gene x membership
++ final indexing at selected dropout coordinates
+```
+
+rather than:
+
+```text
+one small ridge solve per dropout event
+```
+
+Thus millions of high-confidence dropout events increase output/indexing work but no longer create millions of independent regression fits.
 
 ## Predictive uncertainty and DV
 
-Tree-local fallback variance retains both positive-expression outcome variance and local-mean estimation uncertainty. For a supported residual model, held-out error is recomputed using the same deployed `q_final` used in the recovered mean, rather than the stronger pre-information-shrinkage coefficient.
+Tree-local fallback variance retains both positive-expression outcome variance and local-mean estimation uncertainty. For a supported residual model, held-out error is evaluated using the same query-specific deployed `q_final` used in the recovered mean.
 
 The working variance combines residual error, local-mean uncertainty, and weighted factor leverage. It remains an approximate predictive variance and should be checked with held-out coverage.
 
@@ -247,7 +276,7 @@ rec <- recover_dropout_expression(
 )
 ```
 
-If only a bare membership vector is supplied and no explicit hard stratum is provided, tree-local recovery conservatively stays within that final membership. To permit borrowing across sibling memberships, provide a trusted hard stratum via the full `DropoutKillerMembership` object or `hard_stratum` in direct recovery.
+Both a bare membership vector and a full `DropoutKillerMembership` object use the final membership as the recovery borrowing block. A supplied hard stratum can further split that block but never expands borrowing beyond the final membership.
 
 ## Event diagnostics
 
@@ -257,7 +286,7 @@ Tree-local events include:
 - `local_positive_variance`
 - `local_positive_prevalence`
 - `effective_donors` (Kish size of the **positive baseline** donor weights)
-- `n_observed_gene` / `n_donors` (residual-model donor count)
+- `n_observed_gene` / `n_donors` (residual-model donor count available to the query)
 - `tree_distance_weighted_mean`
 - `embedding_distance_weighted_mean`
 - `factor_prediction`
@@ -276,7 +305,7 @@ Recovery must be validated with the same oracle masks across component ablations
 4. tree + embedding weighted mean;
 5. current `masked_factor`;
 6. local mean + residual factor;
-7. full tree-local weighted residual factor.
+7. batched tree-local residual factor.
 
 Required scenarios include MCAR positive masking, original-UMI count strata, Binomial-zero, and full binomial thinning followed by re-normalization, PCA, SuperCell reconstruction, detection, and recovery.
 
