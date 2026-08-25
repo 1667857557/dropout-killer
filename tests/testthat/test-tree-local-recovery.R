@@ -47,6 +47,25 @@ test_that("hard biological strata remain absolute borrowing boundaries", {
   expect_equal(geom$cell_stratum, rep(c("A", "B"), each = 4))
 })
 
+test_that("final memberships remain safe borrowing boundaries when no hard stratum is supplied", {
+  set.seed(11)
+  z <- cbind(PC1 = c(rnorm(6, -2, 0.1), rnorm(6, 2, 0.1)), PC2 = rnorm(12, 0, 0.05))
+  rownames(z) <- paste0("c", 1:12)
+  mf <- build_supercell_membership(z, gamma = 4, k_knn = 3,
+                                   method = "walktrap", approximate = FALSE)
+  expect_false(isTRUE(mf$settings$has_hard_stratum))
+  geom <- DropoutKiller:::.dk_build_local_geometry(
+    z, mf$membership, membership_fit = mf,
+    tree_weight = 0.5, local_k = 3, candidate_k = 10,
+    min_effective_donors = 1, local_info_kappa = 1
+  )
+  m <- mf$membership
+  for (a in unique(m)) for (b in unique(m)) {
+    block <- sum(as.numeric(geom$W[m == a, m == b, drop = FALSE]))
+    if (a == b && sum(m == a) > 1) expect_gt(block, 0) else if (a != b) expect_equal(block, 0)
+  }
+})
+
 test_that("tree-local recovery uses a query-specific positive baseline", {
   cells <- paste0("c", 1:12)
   genes <- paste0("g", 1:6)
