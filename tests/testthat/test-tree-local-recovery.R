@@ -99,7 +99,39 @@ test_that("tree-local recovery uses a query-specific positive baseline", {
   expect_equal(rec$events$recovered[1], rec$events$local_positive_mean[1])
   expect_true(is.finite(rec$events$effective_donors[1]) && rec$events$effective_donors[1] > 0)
   expect_true(is.finite(rec$events$prediction_sd[1]) && rec$events$prediction_sd[1] >= 0)
+  local_stats <- DropoutKiller:::.dk_local_gene_stats(as.numeric(x[1, ]), list(W = rec$local_geometry$W))
+  expect_equal(rec$events$effective_donors[1], local_stats$effective_n[6])
   expect_lt(abs(rec$events$recovered[1] - truth), max(abs(range(x[1, x[1, ] > 0]) - truth)))
+})
+
+test_that("tree-local mean fallback retains positive-expression outcome variance", {
+  W <- matrix(1, 5, 5); diag(W) <- 0
+  W <- Matrix::Matrix(W, sparse = TRUE)
+  xg <- c(0, 1, 2, 4, 5)
+  stats_g <- DropoutKiller:::.dk_local_gene_stats(xg, list(W = W))
+  scores <- cbind(f1 = seq_len(5), f2 = seq_len(5)^2, f3 = c(1, 0, 1, 0, 1))
+  fit <- DropoutKiller:::.dk_weighted_local_residual_target(
+    xg, stats_g, scores, W, query = 1L,
+    ridge = 1, min_target_observed = 2L,
+    min_effective_donors = 1, local_info_kappa = 1
+  )
+  expect_equal(fit$method[1], "tree_local_mean")
+  expect_true(is.finite(stats_g$variance[1]) && stats_g$variance[1] > 0)
+  expect_gt(fit$prediction_sd[1]^2, stats_g$variance[1])
+})
+
+test_that("tree-local ridge rejects invalid penalties", {
+  W <- Matrix::Matrix(matrix(1, 5, 5) - diag(5), sparse = TRUE)
+  xg <- c(0, 1, 2, 3, 4)
+  stats_g <- DropoutKiller:::.dk_local_gene_stats(xg, list(W = W))
+  scores <- matrix(seq_len(10), nrow = 5)
+  expect_error(
+    DropoutKiller:::.dk_weighted_local_residual_target(
+      xg, stats_g, scores, W, query = 1L, ridge = -1,
+      min_target_observed = 2L, min_effective_donors = 1
+    ),
+    "factor_ridge"
+  )
 })
 
 test_that("tree-local engine preserves observed coordinates exactly", {
