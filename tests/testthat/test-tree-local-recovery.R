@@ -40,8 +40,11 @@ test_that("hard biological strata remain absolute borrowing boundaries", {
     local_k = 3, candidate_k = 7, min_effective_donors = 1,
     local_info_kappa = 1
   )
+  expect_gt(sum(as.numeric(geom$W[1:4, 1:4])), 0)
+  expect_gt(sum(as.numeric(geom$W[5:8, 5:8])), 0)
   expect_equal(sum(as.numeric(geom$W[1:4, 5:8])), 0)
   expect_equal(sum(as.numeric(geom$W[5:8, 1:4])), 0)
+  expect_equal(geom$cell_stratum, rep(c("A", "B"), each = 4))
 })
 
 test_that("tree-local recovery uses a query-specific positive baseline", {
