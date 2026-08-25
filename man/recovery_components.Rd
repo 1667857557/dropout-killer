@@ -4,7 +4,7 @@
 \alias{recover_dropout_expression}
 \alias{sample_dropout_expression}
 \title{Selective dropout recovery components}
-\description{Predicts supplied dropout-mask events with membership-local coexpression factors and ridge regression. Target genes are excluded from factor-state learning. By default, after a coordinate has already been classified as technical dropout, target magnitude is learned only from reliable positive donors. Analytic leave-one-out predictions select shrinkage toward the corresponding membership mean and provide approximate predictive uncertainty. The legacy Gaussian neighbor estimator remains available explicitly.}
+\description{Predicts supplied dropout-mask events without overwriting observed coordinates. The tree-local engine combines retained SuperCell hierarchy proximity with the original biological embedding to build query-specific positive-expression baselines, then predicts only residual expression with locally weighted non-target coexpression factors. The historical masked-factor and Gaussian-neighbor engines remain available for comparison.}
 \usage{
 masked_factor_prediction(x, membership, mask, factor_rank = 5L,
   factor_features = 2000L, factor_ridge = 1,
@@ -20,39 +20,44 @@ recover_dropout_expression(x, mask, membership, embedding = NULL,
   neighbor_k = 30L, neighbor_sigma = NULL,
   min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
   cap_quantile = NULL, return_details = FALSE,
-  recovery_method = c("masked_factor", "neighbor"),
+  recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
   factor_rank = 5L, factor_features = 2000L, factor_ridge = 1,
   min_feature_observed = 20L, min_target_observed = 20L,
-  factor_target = c("positive", "all_observed"))
+  factor_target = c("positive", "all_observed"),
+  membership_fit = NULL, hard_stratum = NULL,
+  tree_weight = 0.5, tree_tau = NULL, local_k = 30L,
+  candidate_k = 100L, min_effective_donors = 5,
+  local_info_kappa = 5)
 
 sample_dropout_expression(result, n = 1L, seed = NULL)
 }
 \arguments{
 \item{x}{Non-negative gene-by-cell expression matrix.}
-\item{membership}{One membership label per cell.}
+\item{membership}{One membership label per cell, or a \code{DropoutKillerMembership} object for direct tree-local recovery.}
 \item{mask}{Sparse or dense logical matrix containing only zero-valued dropout events.}
-\item{embedding}{Optional cell-by-dimension latent representation. Required only for \code{recovery_method="neighbor"}.}
-\item{neighbor_k}{Maximum membership-local neighbors for the legacy neighbor engine. This retains its historical positional slot.}
-\item{neighbor_sigma}{Gaussian bandwidth for the legacy neighbor engine. This retains its historical positional slot.}
-\item{min_positive_neighbors}{Minimum positive-expression donors required by the legacy neighbor engine.}
-\item{neighbor_positive_only}{Whether the legacy neighbor estimator excludes zero-valued donors.}
-\item{cap_quantile}{Optional upper cap based on the target gene's eligible membership-local donor expression.}
-\item{return_details}{Return event-level diagnostics in addition to recovered expression.}
-\item{recovery_method}{Recovery engine. \code{"masked_factor"} is the default; \code{"neighbor"} selects the legacy Gaussian cell-neighbor estimator.}
-\item{factor_rank}{Maximum membership-local coexpression-factor rank.}
-\item{factor_features}{Maximum number of high-variance non-target genes used to learn membership cell factors.}
-\item{factor_ridge}{Non-negative ridge penalty for target-gene factor coefficients; the intercept is unpenalized.}
-\item{min_feature_observed}{Minimum observations required for a non-target gene to participate in factor learning.}
-\item{min_target_observed}{Minimum eligible target-gene donor observations for factor regression; otherwise the engine falls back to the matching membership mean when it can estimate one.}
-\item{target_mode}{Target estimand for \code{masked_factor_prediction}. \code{"positive"} estimates expression magnitude using only reliable positive donors after a mask has already classified the query zero as technical dropout. \code{"all_observed"} reproduces the previous zero-inflated target model.}
-\item{factor_target}{End-to-end/direct-recovery analogue of \code{target_mode}; default \code{"positive"}.}
+\item{embedding}{Cell-by-dimension biological representation. Required for \code{"neighbor"} and \code{"tree_local_factor"}.}
+\item{neighbor_k, neighbor_sigma, min_positive_neighbors, neighbor_positive_only}{Historical Gaussian-neighbor controls. Their positional slots are unchanged.}
+\item{cap_quantile}{Optional upper cap used by historical recovery engines.}
+\item{return_details}{Return event diagnostics and local geometry with the recovered matrix.}
+\item{recovery_method}{Recovery engine. \code{"masked_factor"} remains the default comparator; \code{"tree_local_factor"} uses hierarchy- and embedding-weighted local recovery; \code{"neighbor"} uses the legacy Gaussian cell-neighbor estimator.}
+\item{factor_rank, factor_features, factor_ridge}{Non-target coexpression-factor and ridge settings.}
+\item{min_feature_observed}{Minimum observations for a non-target factor feature.}
+\item{min_target_observed}{Minimum target donors required before a factor residual model is attempted. Tree-local recovery otherwise falls back to its query-specific weighted positive mean when local support is adequate.}
+\item{target_mode}{Target estimand for \code{masked_factor_prediction}.}
+\item{factor_target}{Target estimand for direct/end-to-end recovery. \code{"tree_local_factor"} intentionally supports the positive-conditional target only.}
+\item{membership_fit}{Optional \code{DropoutKillerMembership} carrying retained walktrap hierarchies. If omitted, tree-local direct recovery uses embedding-local weighting inside the supplied memberships.}
+\item{hard_stratum}{Optional hard biological boundary for direct recovery. Different strata receive exactly zero donor weight.}
+\item{tree_weight}{Relative contribution of available walktrap-tree proximity to the local kernel, in [0,1].}
+\item{tree_tau}{Positive tree-distance decay scale. \code{NULL} uses a robust within-stratum median positive tree distance.}
+\item{local_k}{Neighbor rank defining the adaptive embedding bandwidth for each query cell.}
+\item{candidate_k}{Maximum embedding-neighbor component of the candidate pool; the query's final membership is also retained as a high-weight core.}
+\item{min_effective_donors}{Minimum Kish effective positive-donor sample size required to recover an event.}
+\item{local_info_kappa}{Non-negative shrinkage strength multiplying residual-factor contribution by \eqn{n_eff/(n_eff+kappa)}.}
 \item{return_events}{Return event-level diagnostics from a prediction function.}
-\item{k}{Maximum membership-local neighbors for \code{weighted_neighbor_prediction}.}
-\item{sigma}{Gaussian bandwidth for \code{weighted_neighbor_prediction}.}
-\item{positive_only}{Whether \code{weighted_neighbor_prediction} excludes zero-valued donors.}
-\item{result}{A \code{DropoutKillerResult} with \code{uncertainty_available=TRUE}. Results from engines without predictive uncertainty are rejected.}
-\item{n}{Number of uncertainty-aware completed matrices to draw.}
-\item{seed}{Optional random seed for completed-matrix draws.}
+\item{k, sigma, positive_only}{Arguments for \code{weighted_neighbor_prediction}.}
+\item{result}{A \code{DropoutKillerResult} with predictive uncertainty.}
+\item{n}{Number of uncertainty-aware completed matrices.}
+\item{seed}{Optional random seed.}
 }
-\details{Factor-state learning uses a truncated SVD of standardized non-target genes. Every target gene carrying a recovery event is excluded from the factor-feature matrix, preventing direct target leakage. Ridge factor contribution is selected with exact analytic leave-one-out shrinkage. Under the default positive-conditional target, predictive variance is based on leave-one-out residual error. Completed-matrix draws use a Gamma moment match with shape \eqn{m^2/v} and scale \eqn{v/m}, preserving the stored predictive mean \eqn{m} and variance \eqn{v} while keeping recovered values positive. Positive-conditional recovery is appropriate only for coordinates already classified as technical dropout; applying it to arbitrary natural zeros can bias expression upward.}
-\value{\code{masked_factor_prediction} and \code{weighted_neighbor_prediction} return sparse predictions unless event tables are requested. \code{recover_dropout_expression} returns a selectively recovered matrix or a list with event diagnostics. \code{sample_dropout_expression} returns one completed matrix when \code{n=1} and a list otherwise.}
+\details{For tree-local recovery, hard strata define absolute borrowing boundaries. A walktrap tree cut is not treated as an absolute wall: nearby sibling memberships may contribute through a decaying tree/embedding kernel. The local positive baseline for target gene g and query cell c is \eqn{sum_j w_cj X_gj / sum_j w_cj} over reliable positive donors. Kish effective donor size is \eqn{(sum w)^2/sum(w^2)}. Non-target factors predict leave-one-out residuals beyond this local baseline using query-weighted ridge regression; unsupported residual structure collapses to the query-specific local mean, not the whole-membership mean. Predictive uncertainty includes held-out residual error, local-mean uncertainty, and local factor leverage. Positive completed-matrix draws use Gamma moment matching.}
+\value{\code{recover_dropout_expression} returns a selectively recovered matrix or, with \code{return_details=TRUE}, a list containing expression, events, uncertainty status, and local geometry for the tree-local engine. Event diagnostics include local positive mean/variance/prevalence, effective donors, tree and embedding distances, factor predictability, shrinkage, and prediction standard deviation.}
