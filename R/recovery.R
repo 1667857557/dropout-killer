@@ -31,7 +31,7 @@
 }
 
 .dk_recover_events <- function(x, events, membership, embedding = NULL,
-                               recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
+                               recovery_method = c("masked_factor", "tree_local_factor", "barycentric", "neighbor"),
                                factor_rank = 5L, factor_features = 2000L,
                                factor_ridge = 1, min_feature_observed = 20L,
                                min_target_observed = 20L,
@@ -44,7 +44,11 @@
                                tree_weight = 0.5, tree_tau = NULL,
                                local_k = 30L, candidate_k = 100L,
                                min_effective_donors = 5,
-                               local_info_kappa = 5) {
+                               local_info_kappa = 5,
+                               membership_penalty = 1,
+                               barycentric_lambda = 1,
+                               barycentric_iter = 20L,
+                               barycentric_tol = 1e-6) {
   recovery_method <- match.arg(recovery_method)
   factor_target <- match.arg(factor_target)
   n <- nrow(events)
@@ -85,6 +89,20 @@
     tl$bandwidth <- if (!is.null(tl$geometry)) tl$geometry$bandwidth[events$j] else rep(NA_real_, n)
     return(tl)
   }
+  if (recovery_method == "barycentric") {
+    if (factor_target != "positive") stop("barycentric implements the positive-conditional recovery target only", call. = FALSE)
+    if (is.null(embedding)) stop("embedding is required for recovery_method='barycentric'", call. = FALSE)
+    return(.dk_barycentric_predict_events(
+      x, embedding, membership, events, membership_fit = membership_fit,
+      hard_stratum = hard_stratum, tree_weight = tree_weight, tree_tau = tree_tau,
+      local_k = local_k, candidate_k = candidate_k,
+      membership_penalty = membership_penalty,
+      barycentric_lambda = barycentric_lambda,
+      barycentric_iter = barycentric_iter,
+      barycentric_tol = barycentric_tol,
+      min_effective_donors = min_effective_donors
+    ))
+  }
   if (is.null(embedding)) stop("embedding is required for recovery_method='neighbor'", call. = FALSE)
   .dk_neighbor_recover_events(
     x, events, membership, embedding, neighbor_k, neighbor_sigma,
@@ -94,21 +112,23 @@
 
 #' Selectively recover masked zero events
 #'
-#' `tree_local_factor` preserves the SuperCell biological geometry instead of
-#' treating every cell in a final membership as exchangeable. Hard biological
-#' strata remain absolute borrowing boundaries; within a stratum, the retained
-#' walktrap hierarchy and the original embedding assign larger weights to
-#' biologically closer donors. The positive target baseline is therefore
-#' query-specific. Coexpression factors predict only residual expression beyond
-#' that local baseline. `masked_factor` and `neighbor` remain available as
-#' comparison engines. Observed values are never overwritten.
+#' `barycentric` treats the final membership as a soft biological prior rather
+#' than an absolute borrowing wall. Within a hard biological stratum it finds
+#' nearby cells in the supplied biological embedding, combines embedding,
+#' SuperCell-hierarchy and membership information into a donor prior, and then
+#' learns a non-negative simplex weight vector that reconstructs the query cell
+#' in embedding space. Target-gene expression never participates in learning
+#' these weights. The same cell-specific weights are therefore reused across all
+#' dropout genes, and only reliable positive target-gene donors contribute to a
+#' recovered value. `tree_local_factor`, `masked_factor`, and `neighbor` remain
+#' available as benchmark engines. Observed values are never overwritten.
 #'
 #' @export
 recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
                                        neighbor_k = 30L, neighbor_sigma = NULL,
                                        min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
                                        cap_quantile = NULL, return_details = FALSE,
-                                       recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
+                                       recovery_method = c("masked_factor", "tree_local_factor", "barycentric", "neighbor"),
                                        factor_rank = 5L, factor_features = 2000L,
                                        factor_ridge = 1, min_feature_observed = 20L,
                                        min_target_observed = 20L,
@@ -117,7 +137,11 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
                                        tree_weight = 0.5, tree_tau = NULL,
                                        local_k = 30L, candidate_k = 100L,
                                        min_effective_donors = 5,
-                                       local_info_kappa = 5) {
+                                       local_info_kappa = 5,
+                                       membership_penalty = 1,
+                                       barycentric_lambda = 1,
+                                       barycentric_iter = 20L,
+                                       barycentric_tol = 1e-6) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   if (inherits(membership, "DropoutKillerMembership")) {
     membership_fit <- membership; membership <- membership_fit$membership
@@ -125,7 +149,7 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   membership <- .dk_align_membership(membership, nm$cells)
   recovery_method <- match.arg(recovery_method)
   factor_target <- match.arg(factor_target)
-  z <- if (recovery_method %in% c("neighbor", "tree_local_factor")) .dk_align_embedding(embedding, nm$cells) else NULL
+  z <- if (recovery_method %in% c("neighbor", "tree_local_factor", "barycentric")) .dk_align_embedding(embedding, nm$cells) else NULL
   if (length(dim(mask)) != 2L || !identical(as.integer(dim(mask)), as.integer(dim(x)))) stop("mask and x dimensions differ", call. = FALSE)
   events <- .dk_mask_events(mask)
   if (nrow(events)) {
@@ -147,7 +171,11 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
     tree_weight = tree_weight, tree_tau = tree_tau,
     local_k = local_k, candidate_k = candidate_k,
     min_effective_donors = min_effective_donors,
-    local_info_kappa = local_info_kappa
+    local_info_kappa = local_info_kappa,
+    membership_penalty = membership_penalty,
+    barycentric_lambda = barycentric_lambda,
+    barycentric_iter = barycentric_iter,
+    barycentric_tol = barycentric_tol
   )
   ok <- fit$prediction > 0 & is.finite(fit$prediction)
   if (inherits(x, "Matrix")) {
@@ -181,7 +209,7 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   events$embedding_distance_weighted_mean <- fit$embedding_distance_weighted_mean
   events$recovered <- fit$prediction
   events$changed <- ok
-  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor") &&
+  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor", "barycentric") &&
     (!any(ok) || all(is.finite(fit$prediction_sd[ok]) & fit$prediction_sd[ok] >= 0))
   if (return_details) {
     list(expression = out, events = events, uncertainty_available = uncertainty_available,
@@ -191,11 +219,10 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
 
 #' Run selective dropout detection and recovery
 #'
-#' Detection remains separate from recovery. The tree-local engine retains the
-#' full SuperCell walktrap hierarchy generated inside each hard biological
-#' stratum. A final gamma cut defines a high-weight core, not an absolute wall:
-#' nearby sibling memberships can contribute with rapidly decaying hierarchy and
-#' embedding weights, while different hard strata never borrow from one another.
+#' Detection remains separate from recovery. `barycentric` uses SuperCell
+#' membership as a soft prior inside an absolute hard biological stratum, so
+#' nearby sibling memberships can contribute when embedding and hierarchy
+#' evidence support borrowing. Historical engines remain available unchanged.
 #'
 #' @export
 dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_by = NULL,
@@ -205,7 +232,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            neighbor_k = 30L, neighbor_sigma = NULL,
                            min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
                            cap_quantile = NULL, seed = 12345L, return_score = FALSE,
-                           recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
+                           recovery_method = c("masked_factor", "tree_local_factor", "barycentric", "neighbor"),
                            factor_rank = 5L, factor_features = 2000L,
                            factor_ridge = 1, min_feature_observed = 20L,
                            min_target_observed = 20L,
@@ -215,7 +242,11 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            tree_weight = 0.5, tree_tau = NULL,
                            local_k = 30L, candidate_k = 100L,
                            min_effective_donors = 5,
-                           local_info_kappa = 5) {
+                           local_info_kappa = 5,
+                           membership_penalty = 1,
+                           barycentric_lambda = 1,
+                           barycentric_iter = 20L,
+                           barycentric_tol = 1e-6) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   z <- .dk_align_embedding(embedding, nm$cells)
   recovery_method <- match.arg(recovery_method)
@@ -253,7 +284,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
   if (nrow(ev)) ev$membership <- membership[ev$j] else ev$membership <- integer()
 
   rec <- .dk_recover_events(
-    x, ev, membership, if (recovery_method %in% c("neighbor", "tree_local_factor")) z else NULL,
+    x, ev, membership, if (recovery_method %in% c("neighbor", "tree_local_factor", "barycentric")) z else NULL,
     recovery_method = recovery_method,
     factor_rank = factor_rank, factor_features = factor_features,
     factor_ridge = factor_ridge, min_feature_observed = min_feature_observed,
@@ -266,7 +297,11 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     tree_weight = tree_weight, tree_tau = tree_tau,
     local_k = local_k, candidate_k = candidate_k,
     min_effective_donors = min_effective_donors,
-    local_info_kappa = local_info_kappa
+    local_info_kappa = local_info_kappa,
+    membership_penalty = membership_penalty,
+    barycentric_lambda = barycentric_lambda,
+    barycentric_iter = barycentric_iter,
+    barycentric_tol = barycentric_tol
   )
   ok <- rec$prediction > 0 & is.finite(rec$prediction)
   if (inherits(x, "Matrix")) {
@@ -321,7 +356,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     events$changed <- logical()
   }
 
-  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor") &&
+  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor", "barycentric") &&
     (!any(ok) || all(is.finite(rec$prediction_sd[ok]) & rec$prediction_sd[ok] >= 0))
   predictive_variance <- NULL
   if (uncertainty_available) {
@@ -352,6 +387,10 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
       local_k = local_k, candidate_k = candidate_k,
       min_effective_donors = min_effective_donors,
       local_info_kappa = local_info_kappa,
+      membership_penalty = membership_penalty,
+      barycentric_lambda = barycentric_lambda,
+      barycentric_iter = barycentric_iter,
+      barycentric_tol = barycentric_tol,
       neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
       min_positive_neighbors = min_positive_neighbors,
       neighbor_positive_only = neighbor_positive_only,
@@ -383,7 +422,7 @@ print.DropoutKillerResult <- function(x, ...) {
   cat(" memberships:", length(unique(x$membership)), "\n")
   cat(" detector:", x$settings$detection_method, "\n")
   cat(" recovery engine:", x$settings$recovery_method, "\n")
-  if (!is.null(x$settings$factor_target) && x$settings$recovery_method %in% c("masked_factor", "tree_local_factor"))
+  if (!is.null(x$settings$factor_target) && x$settings$recovery_method %in% c("masked_factor", "tree_local_factor", "barycentric"))
     cat(" recovery target:", x$settings$factor_target, "\n")
   cat(" high-confidence dropout events:", nrow(x$events), "\n")
   cat(" recovered events:", if (nrow(x$events)) sum(x$events$changed) else 0L, "\n")
