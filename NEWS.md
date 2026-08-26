@@ -1,3 +1,14 @@
+# DropoutKiller 0.7.0
+
+- Added `recovery_method = "barycentric"` as a new recovery-only candidate for the setting where dropout coordinates, biological embedding, SuperCell membership, and hierarchy are already available.
+- Reinterpreted final membership as a soft prior for this engine rather than an absolute borrowing wall. Explicit hard biological strata remain strict zero-weight boundaries; embedding-local candidate cells from nearby sibling memberships may contribute.
+- Added a hierarchy/embedding/membership geometry prior and a target-independent barycentric weight learner. For query cell `c`, donor weights solve a simplex-constrained convex reconstruction problem in biological-embedding space, regularized toward the geometry prior.
+- Reused one learned cell-state weight vector across all dropout genes of the same query cell. Target-gene expression is excluded from weight learning; each target is recovered only from reliable positive donors after gene-specific weight renormalization.
+- Added Kish effective positive-donor size, local positive prevalence, weighted biological variance, working predictive standard deviation, state-reconstruction improvement, same-membership weight, and tree/embedding distance diagnostics.
+- Kept `masked_factor`, `tree_local_factor`, and `neighbor` unchanged as benchmark engines; `barycentric` is intentionally not promoted to the default before oracle-mask and thinning benchmarks establish a consistent advantage.
+- Added a literature-and-design survey in `inst/LOCAL_RECOVERY_ARCHITECTURES.md` covering statistical smoothing, self-representation, Bayesian shrinkage, low-rank completion, graph methods, deep count models, local nonlinear regression, uncertainty propagation, and recovery-engine stacking.
+- Added regression tests for simplex weights, soft cross-membership borrowing, absolute hard-stratum boundaries, selective zero-only writing, and uncertainty reporting.
+
 # DropoutKiller 0.6.0
 
 - Preserved the full `cluster_walktrap()` hierarchy inside `DropoutKillerMembership` instead of discarding it after the gamma cut. Exact builds retain per-stratum hierarchy and a cached tree index; approximate builds retain the anchor hierarchy and fall back to embedding-only weighting when a queried cell has no exact tree leaf.
