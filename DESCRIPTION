@@ -1,16 +1,17 @@
 Package: DropoutKiller
 Type: Package
 Title: Selective Dropout Recovery for Single-Cell RNA Sequencing
-Version: 0.6.0
+Version: 0.7.0
 Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.noreply.github.com", role = c("aut", "cre"))
 Description: Detects high-confidence technical zero events in single-cell RNA-seq
     data using SuperCell-style local memberships, low-rank reconstruction, and
     finite-sample empirical-Bayes zero-null testing with gene-wise false-discovery
-    control. Recovery can retain the full SuperCell walktrap hierarchy and combine
-    tree proximity with the original biological embedding so nearer positive donors
-    contribute more strongly to query-specific expression baselines and local
-    coexpression residual models. Predictive uncertainty is retained and observed
-    non-dropout values are never overwritten.
+    control. Recovery engines can use memberships as either hard local blocks or
+    soft biological priors. The soft barycentric engine learns target-independent
+    donor weights from the biological embedding while combining SuperCell hierarchy
+    and membership information, then selectively borrows positive target-gene
+    expression from biologically similar cells. Predictive uncertainty is retained
+    and observed non-dropout values are never overwritten.
 License: MIT + file LICENSE
 URL: https://github.com/1667857557/dropout-killer
 BugReports: https://github.com/1667857557/dropout-killer/issues
