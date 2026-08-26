@@ -193,7 +193,6 @@
     q_flat <- rep(qg, pair_n)
     d_flat <- unlist(cand, use.names = FALSE)
     de_flat <- unlist(dist, use.names = FALSE)
-    h_flat <- rep(hvec, pair_n)
     qm <- membership[q_flat]; dm <- membership[d_flat]
     tree_index <- .dk_tree_index_for_local_stratum(membership_fit, s)
     dt_flat <- .dk_membership_tree_pair_distance(tree_index, cells[data_idx], membership[data_idx], qm, dm)
@@ -229,16 +228,19 @@
       if (any(tree_ok) && sum(w[tree_ok]) > 0)
         tree_mean[qr] <- sum(w[tree_ok] * dt[tree_ok]) / sum(w[tree_ok])
       same_membership_weight[qr] <- sum(w[membership[donors] == membership[qg[a]]])
-      wi <- c(wi, rep.int(qr, length(donors)))
-      wj <- c(wj, donors)
-      wx <- c(wx, w)
-      px <- c(px, prior)
+      keep_w <- is.finite(w) & w > 0
+      if (any(keep_w)) {
+        wi <- c(wi, rep.int(qr, sum(keep_w)))
+        wj <- c(wj, donors[keep_w])
+        wx <- c(wx, w[keep_w])
+        px <- c(px, prior[keep_w])
+      }
     }
   }
-  W <- Matrix::sparseMatrix(i = wi, j = wj, x = wx, dims = c(nq, n),
-                            dimnames = list(cells[query_cells], cells))
-  P <- Matrix::sparseMatrix(i = wi, j = wj, x = px, dims = c(nq, n),
-                            dimnames = list(cells[query_cells], cells))
+  W <- Matrix::drop0(Matrix::sparseMatrix(i = wi, j = wj, x = wx, dims = c(nq, n),
+                                           dimnames = list(cells[query_cells], cells)))
+  P <- Matrix::drop0(Matrix::sparseMatrix(i = wi, j = wj, x = px, dims = c(nq, n),
+                                           dimnames = list(cells[query_cells], cells)))
   list(W = W, W2 = W * W, prior = P, prior2 = P * P, query_cells = query_cells,
        bandwidth = bandwidth, candidate_count = candidate_count,
        state_error = state_error, prior_error = prior_error,
