@@ -16,10 +16,20 @@ membership_summary <- function(membership, group = NULL) {
 
 #' Validate zero-selective recovery invariants
 #'
+#' For results produced with the default high-level ALRA preprocessing, `original`
+#' is interpreted as the raw input matrix and transformed to the same working
+#' library-size-normalized log scale before invariants are checked.
+#'
 #' @export
 validate_dropout_result <- function(result, original, tolerance = 0) {
   if (!inherits(result, "DropoutKillerResult")) stop("result must be a DropoutKillerResult", call. = FALSE)
   original <- .dk_validate_expression(original)
+  use_norm <- !is.null(result$settings$normalize) && isTRUE(result$settings$normalize)
+  if (use_norm) {
+    sf <- result$settings$normalization_scale_factor
+    if (is.null(sf)) sf <- 1e4
+    original <- .dk_alra_library_log(original, scale_factor = sf)
+  }
   same_dim <- identical(dim(result$expression), dim(original))
   if (!same_dim) return(list(valid = FALSE, same_dimensions = FALSE, observed_nonzero_preserved = FALSE, only_masked_zeros_changed = FALSE, nonnegative = FALSE))
   if (inherits(original, "sparseMatrix")) {
