@@ -3,15 +3,18 @@ Type: Package
 Title: Selective Dropout Recovery for Single-Cell RNA Sequencing
 Version: 0.6.0
 Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.noreply.github.com", role = c("aut", "cre"))
-Description: Detects high-confidence technical zero events in single-cell RNA-seq
-    data after ALRA-style library-size normalization and log transformation,
-    using SuperCell-style local memberships, low-rank reconstruction, and
-    finite-sample empirical-Bayes zero-null testing with gene-wise false-discovery
-    control. Recovery can retain the full SuperCell walktrap hierarchy and combine
-    tree proximity with the original biological embedding so nearer positive donors
-    contribute more strongly to query-specific expression baselines and local
-    coexpression residual models. Predictive uncertainty is retained and observed
-    non-dropout values are never overwritten on the normalized working scale.
+Description: Detects technical zero events in single-cell RNA-seq data after
+    ALRA-style library-size normalization and log transformation. The production
+    detector applies native-ALRA-style randomized low-rank reconstruction and the
+    gene-wise empirical 0.1 percent quantile zero gate globally within each major
+    cell class, while SuperCell memberships and retained hierarchy remain reserved
+    for biologically local recovery. Historical membership-local empirical-Bayes
+    and ALRA-quantile detectors remain available for explicit comparison. Recovery
+    can combine hierarchy proximity with the original biological embedding so
+    nearer positive donors contribute more strongly to query-specific expression
+    baselines and local coexpression residual models. Predictive uncertainty is
+    retained and observed non-dropout values are never overwritten on the
+    normalized working scale.
 License: MIT + file LICENSE
 URL: https://github.com/1667857557/dropout-killer
 BugReports: https://github.com/1667857557/dropout-killer/issues
@@ -24,6 +27,7 @@ Imports:
     matrixStats,
     methods,
     RANN,
+    rsvd,
     stats,
     utils
 Suggests:
