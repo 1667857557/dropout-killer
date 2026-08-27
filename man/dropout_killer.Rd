@@ -3,7 +3,7 @@
 \alias{DropoutKiller}
 \alias{run_dropout_killer}
 \title{Run the complete DropoutKiller workflow}
-\description{Builds or accepts biologically restricted cell memberships, detects selected technical-zero candidates, and selectively recovers only those events. Version 0.6 can retain the full SuperCell walktrap hierarchy and combine tree proximity with the original biological embedding so closer positive donors contribute more strongly to query-specific recovery. Historical masked-factor and neighbor engines remain available. Observed values are never overwritten.}
+\description{Builds or accepts biologically restricted cell memberships, applies ALRA-style library-size and log normalization by default, detects selected technical-zero candidates, and selectively recovers only those events. Version 0.6 can retain the full SuperCell walktrap hierarchy and combine tree proximity with the original biological embedding so closer positive donors contribute more strongly to query-specific recovery. Historical masked-factor and neighbor engines remain available. Observed non-dropout values are preserved exactly on the normalized working scale.}
 \usage{
 dropout_killer(x, embedding, membership = NULL, group = NULL,
   split_by = NULL, gamma = 150, k_knn = 5L, approximate = "auto",
@@ -20,7 +20,8 @@ dropout_killer(x, embedding, membership = NULL, group = NULL,
   factor_target = c("positive", "all_observed"),
   tree_weight = 0.5, tree_tau = NULL, local_k = 30L,
   candidate_k = 100L, min_effective_donors = 5,
-  local_info_kappa = 5)
+  local_info_kappa = 5, normalize = TRUE,
+  normalization_scale_factor = 1e4)
 
 DropoutKiller(x, embedding, membership = NULL, group = NULL,
   split_by = NULL, gamma = 150, k_knn = 5L, approximate = "auto",
@@ -37,7 +38,8 @@ DropoutKiller(x, embedding, membership = NULL, group = NULL,
   factor_target = c("positive", "all_observed"),
   tree_weight = 0.5, tree_tau = NULL, local_k = 30L,
   candidate_k = 100L, min_effective_donors = 5,
-  local_info_kappa = 5)
+  local_info_kappa = 5, normalize = TRUE,
+  normalization_scale_factor = 1e4)
 
 run_dropout_killer(x, embedding, membership = NULL, group = NULL,
   split_by = NULL, gamma = 150, k_knn = 5L, approximate = "auto",
@@ -54,10 +56,11 @@ run_dropout_killer(x, embedding, membership = NULL, group = NULL,
   factor_target = c("positive", "all_observed"),
   tree_weight = 0.5, tree_tau = NULL, local_k = 30L,
   candidate_k = 100L, min_effective_donors = 5,
-  local_info_kappa = 5)
+  local_info_kappa = 5, normalize = TRUE,
+  normalization_scale_factor = 1e4)
 }
 \arguments{
-\item{x}{Non-negative gene-by-cell expression matrix, typically normalized/log-transformed expression rather than raw counts.}
+\item{x}{Non-negative gene-by-cell raw count/expression matrix. By default it is internally library-size normalized and log transformed using the ALRA convention. Set \code{normalize=FALSE} only when supplying an already normalized working matrix.}
 \item{embedding}{Cell-by-dimension biological representation used for membership construction and local recovery geometry.}
 \item{membership}{Optional membership vector or \code{DropoutKillerMembership}. Internally built memberships retain the full walktrap hierarchy.}
 \item{group}{Optional hard biological stratum such as major cell type. Different groups never borrow under tree-local recovery.}
@@ -78,9 +81,11 @@ run_dropout_killer(x, embedding, membership = NULL, group = NULL,
 \item{tree_weight}{Relative contribution of available hierarchy proximity to the local kernel, in [0,1].}
 \item{tree_tau}{Positive hierarchy-distance decay scale. \code{NULL} estimates a robust scale inside each hard stratum.}
 \item{local_k}{Neighbor rank defining the adaptive embedding bandwidth.}
-\item{candidate_k}{Embedding-neighbor candidate-pool size. Final-membership cells are also retained as a high-weight core.}
+\item{candidate_k}{Embedding-neighbor candidate-pool size within the final membership.}
 \item{min_effective_donors}{Minimum Kish effective positive-donor size required for tree-local recovery.}
 \item{local_info_kappa}{Non-negative information shrinkage strength applied to local residual-factor contribution.}
+\item{normalize}{Logical. If \code{TRUE} (default), apply ALRA-equivalent library-size normalization followed by \code{log1p} once before detection and recovery.}
+\item{normalization_scale_factor}{Positive library-size target used before \code{log1p}; default \code{1e4}, matching ALRA.}
 }
-\details{The final SuperCell membership is a cut through a retained walktrap hierarchy, not an assumption that all cells in the cut are exchangeable. In \code{"tree_local_factor"}, hard biological strata are absolute borrowing boundaries. Within a stratum, a query cell can borrow from nearby sibling memberships, but contribution decays according to both hierarchy proximity and adaptive embedding distance. The positive baseline is query-specific, and non-target factors predict only residual expression beyond that baseline using locally weighted ridge regression. Weak local support shrinks residual correction toward the query-specific local mean. The deterministic matrix contains conditional means; DV-sensitive analysis should propagate stored predictive uncertainty or repeated Gamma moment-matched draws.}
-\value{A \code{DropoutKillerResult} containing expression, mask, event table, memberships, membership hierarchy when internally built, detection details, settings, uncertainty status, and optional sparse predictive variance. Tree-local results also contain \code{local_geometry}; event tables include local positive mean/variance/prevalence, effective donors, weighted tree/embedding distance diagnostics, factor predictability, shrinkage, and prediction standard deviation.}
+\details{For genes in rows and cells in columns, default preprocessing is \deqn{X'_{gc}=\log(1+10^4 X_{gc}/\sum_h X_{hc}).} The same normalized matrix is used by both detection and recovery. Zero-library cells are rejected rather than silently removed so expression, embedding, and membership remain aligned. The final SuperCell membership is the recovery borrowing block. Within that block, retained hierarchy and embedding information can weight biologically closer donors. The positive baseline is query-specific, and non-target factors predict only residual expression beyond that baseline using locally weighted ridge regression. Weak local support shrinks residual correction toward the query-specific local mean. The deterministic matrix contains conditional means; DV-sensitive analysis should propagate stored predictive uncertainty or repeated Gamma moment-matched draws.}
+\value{A \code{DropoutKillerResult} containing normalized recovered expression, mask, event table, memberships, membership hierarchy when internally built, detection details, settings, uncertainty status, and optional sparse predictive variance. Tree-local results also contain \code{local_geometry}; event tables include local positive mean/variance/prevalence, effective donors, weighted tree/embedding distance diagnostics, factor predictability, shrinkage, and prediction standard deviation.}
