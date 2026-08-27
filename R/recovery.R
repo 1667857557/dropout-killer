@@ -103,6 +103,10 @@
 #' that local baseline. `masked_factor` and `neighbor` remain available as
 #' comparison engines. Observed values are never overwritten.
 #'
+#' This lower-level recovery function expects `x` on the desired recovery scale.
+#' The high-level `dropout_killer()` entry point performs ALRA library+log
+#' normalization from raw counts by default.
+#'
 #' @export
 recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
                                        neighbor_k = 30L, neighbor_sigma = NULL,
@@ -191,11 +195,20 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
 
 #' Run selective dropout detection and recovery
 #'
-#' Detection remains separate from recovery. The tree-local engine retains the
-#' full SuperCell walktrap hierarchy generated inside each hard biological
-#' stratum. A final gamma cut defines a high-weight core, not an absolute wall:
-#' nearby sibling memberships can contribute with rapidly decaying hierarchy and
-#' embedding weights, while different hard strata never borrow from one another.
+#' The high-level workflow accepts a non-negative raw expression/count matrix by
+#' default and applies the same library-size + log transform used by ALRA's
+#' `normalize_data()`. For genes in rows and cells in columns, the working matrix
+#' is
+#'
+#' `log1p(normalization_scale_factor * X_gc / sum_g X_gc)`,
+#'
+#' with `normalization_scale_factor = 1e4`. Detection and recovery both use this
+#' single normalized working matrix. Set `normalize = FALSE` only when `x` is
+#' already on the desired normalized expression scale.
+#'
+#' Detection remains separate from recovery. Final SuperCell membership is the
+#' recovery borrowing block; retained hierarchy and embedding information weight
+#' biologically closer donors within that block.
 #'
 #' @export
 dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_by = NULL,
@@ -215,8 +228,14 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            tree_weight = 0.5, tree_tau = NULL,
                            local_k = 30L, candidate_k = 100L,
                            min_effective_donors = 5,
-                           local_info_kappa = 5) {
+                           local_info_kappa = 5,
+                           normalize = TRUE, normalization_scale_factor = 1e4) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
+  if (!is.logical(normalize) || length(normalize) != 1L || is.na(normalize)) stop("normalize must be TRUE or FALSE", call. = FALSE)
+  if (!is.numeric(normalization_scale_factor) || length(normalization_scale_factor) != 1L ||
+      !is.finite(normalization_scale_factor) || normalization_scale_factor <= 0)
+    stop("normalization_scale_factor must be a finite value > 0", call. = FALSE)
+  if (normalize) x <- .dk_alra_library_log(x, scale_factor = normalization_scale_factor)
   z <- .dk_align_embedding(embedding, nm$cells)
   recovery_method <- match.arg(recovery_method)
   detection_method <- match.arg(detection_method)
@@ -355,7 +374,10 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
       neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
       min_positive_neighbors = min_positive_neighbors,
       neighbor_positive_only = neighbor_positive_only,
-      cap_quantile = cap_quantile, seed = seed
+      cap_quantile = cap_quantile, seed = seed,
+      normalize = normalize,
+      normalization_scale_factor = normalization_scale_factor,
+      normalization = if (normalize) "ALRA_library_size_log1p" else "none"
     )
   )
   if (return_score) {
@@ -383,6 +405,7 @@ print.DropoutKillerResult <- function(x, ...) {
   cat(" memberships:", length(unique(x$membership)), "\n")
   cat(" detector:", x$settings$detection_method, "\n")
   cat(" recovery engine:", x$settings$recovery_method, "\n")
+  if (!is.null(x$settings$normalization)) cat(" normalization:", x$settings$normalization, "\n")
   if (!is.null(x$settings$factor_target) && x$settings$recovery_method %in% c("masked_factor", "tree_local_factor"))
     cat(" recovery target:", x$settings$factor_target, "\n")
   cat(" high-confidence dropout events:", nrow(x$events), "\n")
