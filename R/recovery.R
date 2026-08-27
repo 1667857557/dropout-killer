@@ -195,20 +195,18 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
 
 #' Run selective dropout detection and recovery
 #'
-#' The high-level workflow accepts a non-negative raw expression/count matrix by
-#' default and applies the same library-size + log transform used by ALRA's
-#' `normalize_data()`. For genes in rows and cells in columns, the working matrix
-#' is
+#' Raw counts are ALRA library-size normalized to 10,000 counts per cell and
+#' `log1p` transformed by default. The production zero detector now applies the
+#' original ALRA randomized low-rank strategy globally within each supplied
+#' `group` (major cell class), followed by the per-gene absolute 0.1% low-rank
+#' quantile gate. `split_by` and final SuperCell memberships do not fragment this
+#' detection block; they remain biological boundaries for recovery. If `group`
+#' is `NULL`, all cells form one global ALRA detection block.
 #'
-#' `log1p(normalization_scale_factor * X_gc / sum_g X_gc)`,
-#'
-#' with `normalization_scale_factor = 1e4`. Detection and recovery both use this
-#' single normalized working matrix. Set `normalize = FALSE` only when `x` is
-#' already on the desired normalized expression scale.
-#'
-#' Detection remains separate from recovery. Final SuperCell membership is the
-#' recovery borrowing block; retained hierarchy and embedding information weight
-#' biologically closer donors within that block.
+#' Historical membership-local `eb_zero_null` and `alra_quantile` detectors remain
+#' available by explicit `detection_method` selection. The `threshold` argument is
+#' not applied to `alra_global_by_group`, because native ALRA already makes a
+#' binary call at its quantile gate.
 #'
 #' @export
 dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_by = NULL,
@@ -222,14 +220,16 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            factor_rank = 5L, factor_features = 2000L,
                            factor_ridge = 1, min_feature_observed = 20L,
                            min_target_observed = 20L,
-                           detection_method = c("eb_zero_null", "alra_quantile"),
+                           detection_method = c("alra_global_by_group", "eb_zero_null", "alra_quantile"),
                            variance_prior_df = 10,
                            factor_target = c("positive", "all_observed"),
                            tree_weight = 0.5, tree_tau = NULL,
                            local_k = 30L, candidate_k = 100L,
                            min_effective_donors = 5,
                            local_info_kappa = 5,
-                           normalize = TRUE, normalization_scale_factor = 1e4) {
+                           normalize = TRUE, normalization_scale_factor = 1e4,
+                           alra_K = 100L, alra_noise_start = 80L,
+                           alra_choose_q = 2L, alra_svd_q = 10L) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   if (!is.logical(normalize) || length(normalize) != 1L || is.na(normalize)) stop("normalize must be TRUE or FALSE", call. = FALSE)
   if (!is.numeric(normalization_scale_factor) || length(normalization_scale_factor) != 1L ||
@@ -260,14 +260,27 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     membership_fit$membership_table$membership <- as.integer(as.character(membership_fit$membership_table$membership))
   } else membership <- .dk_align_membership(membership, nm$cells)
 
-  det <- local_alra_detect(
-    x, membership, rank = rank, max_rank = max_rank, rank_z = rank_z,
-    quantile_prob = quantile_prob, min_cells = min_cells,
-    min_negative = min_negative, seed = seed,
-    detection_method = detection_method,
-    variance_prior_df = variance_prior_df
-  )
-  mask <- select_dropout_mask(det, threshold = threshold)
+  if (detection_method == "alra_global_by_group") {
+    det <- .dk_global_alra_detect(
+      x, group = group, rank = rank, quantile_prob = quantile_prob,
+      min_cells = min_cells, seed = seed, K = alra_K, rank_z = rank_z,
+      noise_start = alra_noise_start, choose_q = alra_choose_q,
+      svd_q = alra_svd_q
+    )
+    if (nrow(det$events)) det$events$membership <- membership[det$events$j]
+    mask <- .dk_sparse_logical(
+      det$events$i, det$events$j, nrow(x), ncol(x), dimnames(x)
+    )
+  } else {
+    det <- local_alra_detect(
+      x, membership, rank = rank, max_rank = max_rank, rank_z = rank_z,
+      quantile_prob = quantile_prob, min_cells = min_cells,
+      min_negative = min_negative, seed = seed,
+      detection_method = detection_method,
+      variance_prior_df = variance_prior_df
+    )
+    mask <- select_dropout_mask(det, threshold = threshold)
+  }
   ev <- .dk_mask_events(mask)
   if (nrow(ev)) ev$membership <- membership[ev$j] else ev$membership <- integer()
 
@@ -301,6 +314,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     key <- paste(ev$i, ev$j, sep = ":")
     did <- match(key, paste(det$events$i, det$events$j, sep = ":"))
     events <- det$events[did, , drop = FALSE]
+    events$membership <- membership[events$j]
     events$factor_prediction <- rec$factor_prediction
     events$prediction_sd <- rec$prediction_sd
     events$predictability <- rec$predictability
@@ -361,7 +375,13 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
       rank = rank, max_rank = max_rank, rank_z = rank_z,
       quantile_prob = quantile_prob, threshold = threshold,
       min_cells = min_cells, min_negative = min_negative,
-      detection_method = detection_method, variance_prior_df = variance_prior_df,
+      detection_method = detection_method,
+      detection_scope = if (detection_method == "alra_global_by_group") {
+        if (is.null(group)) "all_cells" else "group"
+      } else "membership",
+      variance_prior_df = variance_prior_df,
+      alra_K = as.integer(alra_K), alra_noise_start = as.integer(alra_noise_start),
+      alra_choose_q = as.integer(alra_choose_q), alra_svd_q = as.integer(alra_svd_q),
       recovery_method = recovery_method, factor_target = factor_target,
       factor_rank = factor_rank, factor_features = factor_features,
       factor_ridge = factor_ridge,
@@ -388,6 +408,8 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     )
     attr(out$score, "zero_only") <- TRUE
     attr(out$score, "detection") <- det
+    attr(out$score, "score_type") <- if (detection_method == "alra_global_by_group")
+      "binary_native_alra_call" else "confidence"
   }
   class(out) <- "DropoutKillerResult"
   out
@@ -404,11 +426,12 @@ print.DropoutKillerResult <- function(x, ...) {
   cat(" dimensions:", paste(dim(x$expression), collapse = " x "), "\n")
   cat(" memberships:", length(unique(x$membership)), "\n")
   cat(" detector:", x$settings$detection_method, "\n")
+  if (!is.null(x$settings$detection_scope)) cat(" detection scope:", x$settings$detection_scope, "\n")
   cat(" recovery engine:", x$settings$recovery_method, "\n")
   if (!is.null(x$settings$normalization)) cat(" normalization:", x$settings$normalization, "\n")
   if (!is.null(x$settings$factor_target) && x$settings$recovery_method %in% c("masked_factor", "tree_local_factor"))
     cat(" recovery target:", x$settings$factor_target, "\n")
-  cat(" high-confidence dropout events:", nrow(x$events), "\n")
+  cat(" selected dropout events:", nrow(x$events), "\n")
   cat(" recovered events:", if (nrow(x$events)) sum(x$events$changed) else 0L, "\n")
   invisible(x)
 }
