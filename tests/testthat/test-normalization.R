@@ -4,9 +4,13 @@ test_that("ALRA library+log normalization matches the reference formula", {
   lib <- colSums(x)
   expected <- log1p(sweep(x, 2L, lib, FUN = "/") * 1e4)
   got <- DropoutKiller:::.dk_alra_library_log(x)
-  expect_equal(as.matrix(got), expected, tolerance = 1e-12)
+  expect_equal(dim(got), dim(expected))
+  expect_equal(dimnames(got), dimnames(expected))
+  expect_equal(as.numeric(got), as.numeric(expected), tolerance = 1e-12)
   expect_equal(got[x == 0], rep(0, sum(x == 0)))
   expect_equal(attr(got, "dropoutkiller_normalization")$scale_factor, 1e4)
+  expect_equal(attr(got, "dropoutkiller_normalization")$method,
+               "ALRA_library_size_log1p")
 })
 
 test_that("sparse ALRA normalization matches dense normalization", {
@@ -15,7 +19,10 @@ test_that("sparse ALRA normalization matches dense normalization", {
   dense <- DropoutKiller:::.dk_alra_library_log(x)
   sparse <- DropoutKiller:::.dk_alra_library_log(Matrix::Matrix(x, sparse = TRUE))
   expect_true(inherits(sparse, "sparseMatrix"))
-  expect_equal(as.matrix(sparse), as.matrix(dense), tolerance = 1e-12)
+  expect_equal(dim(sparse), dim(dense))
+  expect_equal(dimnames(sparse), dimnames(dense))
+  expect_equal(as.numeric(sparse), as.numeric(dense), tolerance = 1e-12)
+  expect_equal(attr(sparse, "dropoutkiller_normalization")$scale_factor, 1e4)
 })
 
 test_that("zero-library cells are rejected instead of silently breaking alignment", {
