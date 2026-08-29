@@ -31,7 +31,8 @@
 }
 
 .dk_recover_events <- function(x, events, membership, embedding = NULL,
-                               recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
+                               recovery_method = c("masked_factor", "p1_stabilized_state",
+                                                   "tree_local_factor", "neighbor"),
                                factor_rank = 5L, factor_features = 2000L,
                                factor_ridge = 1, min_feature_observed = 20L,
                                min_target_observed = 20L,
@@ -44,17 +45,49 @@
                                tree_weight = 0.5, tree_tau = NULL,
                                local_k = 30L, candidate_k = 100L,
                                min_effective_donors = 5,
-                               local_info_kappa = 5) {
+                               local_info_kappa = 5,
+                               factor_crossfit_folds = 1L,
+                               factor_crossfit_seed = 1L,
+                               support_adaptive_rank = FALSE,
+                               bias_kappa = Inf,
+                               predictor_smoothing = 0.25) {
   recovery_method <- match.arg(recovery_method)
   factor_target <- match.arg(factor_target)
   n <- nrow(events)
+  if (recovery_method == "p1_stabilized_state") {
+    if (factor_target != "positive") {
+      stop("p1_stabilized_state implements the positive-conditional recovery target only",
+           call. = FALSE)
+    }
+    if (is.null(embedding)) {
+      stop("embedding is required for recovery_method='p1_stabilized_state'",
+           call. = FALSE)
+    }
+    return(.dk_p1_stabilized_predict_events(
+      x, events, membership, embedding,
+      membership_fit = membership_fit, hard_stratum = hard_stratum,
+      factor_rank = factor_rank, factor_features = factor_features,
+      factor_ridge = factor_ridge,
+      min_feature_observed = min_feature_observed,
+      min_target_observed = min_target_observed,
+      factor_crossfit_folds = factor_crossfit_folds,
+      factor_crossfit_seed = factor_crossfit_seed,
+      bias_kappa = bias_kappa,
+      support_adaptive_rank = support_adaptive_rank,
+      predictor_smoothing = predictor_smoothing
+    ))
+  }
   if (recovery_method == "masked_factor") {
     mf <- .dk_masked_factor_predict_events(
       x, membership, events, factor_rank = factor_rank,
       factor_features = factor_features, factor_ridge = factor_ridge,
       min_feature_observed = min_feature_observed,
       min_target_observed = min_target_observed,
-      cap_quantile = cap_quantile, target_mode = factor_target
+      cap_quantile = cap_quantile, target_mode = factor_target,
+      factor_crossfit_folds = factor_crossfit_folds,
+      factor_crossfit_seed = factor_crossfit_seed,
+      support_adaptive_rank = support_adaptive_rank,
+      bias_kappa = bias_kappa
     )
     return(c(mf, list(cell_prediction = rep(NA_real_, n),
                       cell_available = rep(FALSE, n), n_donors = integer(n),
@@ -77,7 +110,10 @@
       tree_weight = tree_weight, tree_tau = tree_tau,
       local_k = local_k, candidate_k = candidate_k,
       min_effective_donors = min_effective_donors,
-      local_info_kappa = local_info_kappa
+      local_info_kappa = local_info_kappa,
+      factor_crossfit_folds = factor_crossfit_folds,
+      factor_crossfit_seed = factor_crossfit_seed,
+      support_adaptive_rank = support_adaptive_rank
     )
     tl$cell_prediction <- tl$local_positive_mean
     tl$cell_available <- is.finite(tl$local_positive_mean)
@@ -94,14 +130,19 @@
 
 #' Selectively recover masked zero events
 #'
-#' `tree_local_factor` preserves the SuperCell biological geometry instead of
+#' `p1_stabilized_state` excludes each target-gene fold from its predictor
+#' state, applies one row-stochastic smoothing step over the hierarchy/embedding
+#' geometry, and then fits the P1 positive-donor ridge state. This is the
+#' production recovery engine used by `dropout_killer()`. `tree_local_factor`
+#' preserves the SuperCell biological geometry instead of
 #' treating every cell in a final membership as exchangeable. Hard biological
 #' strata remain absolute borrowing boundaries; within a stratum, the retained
 #' walktrap hierarchy and the original embedding assign larger weights to
 #' biologically closer donors. The positive target baseline is therefore
 #' query-specific. Coexpression factors predict only residual expression beyond
-#' that local baseline. `masked_factor` and `neighbor` remain available as
-#' comparison engines. Observed values are never overwritten.
+#' that local baseline. `masked_factor`, `tree_local_factor`, and `neighbor`
+#' remain available as explicit comparison engines. Observed values are never
+#' overwritten.
 #'
 #' This lower-level recovery function expects `x` on the desired recovery scale.
 #' The high-level `dropout_killer()` entry point performs ALRA library+log
@@ -112,7 +153,8 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
                                        neighbor_k = 30L, neighbor_sigma = NULL,
                                        min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
                                        cap_quantile = NULL, return_details = FALSE,
-                                       recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
+                                       recovery_method = c("masked_factor", "p1_stabilized_state",
+                                                           "tree_local_factor", "neighbor"),
                                        factor_rank = 5L, factor_features = 2000L,
                                        factor_ridge = 1, min_feature_observed = 20L,
                                        min_target_observed = 20L,
@@ -121,7 +163,12 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
                                        tree_weight = 0.5, tree_tau = NULL,
                                        local_k = 30L, candidate_k = 100L,
                                        min_effective_donors = 5,
-                                       local_info_kappa = 5) {
+                                       local_info_kappa = 5,
+                                       factor_crossfit_folds = 1L,
+                                       factor_crossfit_seed = 1L,
+                                       support_adaptive_rank = FALSE,
+                                       bias_kappa = Inf,
+                                       predictor_smoothing = 0.25) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   if (inherits(membership, "DropoutKillerMembership")) {
     membership_fit <- membership; membership <- membership_fit$membership
@@ -129,7 +176,9 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   membership <- .dk_align_membership(membership, nm$cells)
   recovery_method <- match.arg(recovery_method)
   factor_target <- match.arg(factor_target)
-  z <- if (recovery_method %in% c("neighbor", "tree_local_factor")) .dk_align_embedding(embedding, nm$cells) else NULL
+  z <- if (recovery_method %in% c(
+    "p1_stabilized_state", "neighbor", "tree_local_factor"
+  )) .dk_align_embedding(embedding, nm$cells) else NULL
   if (length(dim(mask)) != 2L || !identical(as.integer(dim(mask)), as.integer(dim(x)))) stop("mask and x dimensions differ", call. = FALSE)
   events <- .dk_mask_events(mask)
   if (nrow(events)) {
@@ -151,7 +200,12 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
     tree_weight = tree_weight, tree_tau = tree_tau,
     local_k = local_k, candidate_k = candidate_k,
     min_effective_donors = min_effective_donors,
-    local_info_kappa = local_info_kappa
+    local_info_kappa = local_info_kappa,
+    factor_crossfit_folds = factor_crossfit_folds,
+    factor_crossfit_seed = factor_crossfit_seed,
+    support_adaptive_rank = support_adaptive_rank,
+    bias_kappa = bias_kappa,
+    predictor_smoothing = predictor_smoothing
   )
   ok <- fit$prediction > 0 & is.finite(fit$prediction)
   if (inherits(x, "Matrix")) {
@@ -171,6 +225,8 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   events$factor_features <- fit$factor_features
   events$factor_iterations <- fit$factor_iterations
   events$factor_converged <- fit$factor_converged
+  events$factor_fold <- if (is.null(fit$factor_fold)) integer(nrow(events)) else fit$factor_fold
+  events$bias_calibration <- if (is.null(fit$bias_calibration)) numeric(nrow(events)) else fit$bias_calibration
   events$recovery_method <- fit$recovery_method
   events$target_mode <- fit$target_mode
   events$cell_prediction <- fit$cell_prediction
@@ -185,7 +241,9 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
   events$embedding_distance_weighted_mean <- fit$embedding_distance_weighted_mean
   events$recovered <- fit$prediction
   events$changed <- ok
-  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor") &&
+  uncertainty_available <- recovery_method %in% c(
+    "p1_stabilized_state", "masked_factor", "tree_local_factor"
+  ) &&
     (!any(ok) || all(is.finite(fit$prediction_sd[ok]) & fit$prediction_sd[ok] >= 0))
   if (return_details) {
     list(expression = out, events = events, uncertainty_available = uncertainty_available,
@@ -203,6 +261,12 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
 #' detection block; they remain biological boundaries for recovery. If `group`
 #' is `NULL`, all cells form one global ALRA detection block.
 #'
+#' The production recovery engine is `p1_stabilized_state`: deterministic
+#' target-gene folds are removed from predictor construction, the target-safe
+#' predictor state is smoothed once over the hierarchy/embedding geometry, and
+#' P1 positive-donor ridge predictions are bias-calibrated with analytic LOO
+#' diagnostics. Legacy recovery engines remain available by explicit selection.
+#'
 #' Historical membership-local `eb_zero_null` and `alra_quantile` detectors remain
 #' available by explicit `detection_method` selection. The `threshold` argument is
 #' not applied to `alra_global_by_group`, because native ALRA already makes a
@@ -216,10 +280,11 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            neighbor_k = 30L, neighbor_sigma = NULL,
                            min_positive_neighbors = 1L, neighbor_positive_only = TRUE,
                            cap_quantile = NULL, seed = 12345L, return_score = FALSE,
-                           recovery_method = c("masked_factor", "tree_local_factor", "neighbor"),
+                           recovery_method = c("p1_stabilized_state", "masked_factor",
+                                               "tree_local_factor", "neighbor"),
                            factor_rank = 5L, factor_features = 2000L,
-                           factor_ridge = 1, min_feature_observed = 20L,
-                           min_target_observed = 20L,
+                           factor_ridge = 2, min_feature_observed = 20L,
+                           min_target_observed = 8L,
                            detection_method = c("alra_global_by_group", "eb_zero_null", "alra_quantile"),
                            variance_prior_df = 10,
                            factor_target = c("positive", "all_observed"),
@@ -229,7 +294,12 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            local_info_kappa = 5,
                            normalize = TRUE, normalization_scale_factor = 1e4,
                            alra_K = 100L, alra_noise_start = 80L,
-                           alra_choose_q = 2L, alra_svd_q = 10L) {
+                           alra_choose_q = 2L, alra_svd_q = 10L,
+                           factor_crossfit_folds = 5L,
+                           factor_crossfit_seed = 1L,
+                           support_adaptive_rank = TRUE,
+                           bias_kappa = 10,
+                           predictor_smoothing = 0.25) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
   if (!is.logical(normalize) || length(normalize) != 1L || is.na(normalize)) stop("normalize must be TRUE or FALSE", call. = FALSE)
   if (!is.numeric(normalization_scale_factor) || length(normalization_scale_factor) != 1L ||
@@ -285,7 +355,9 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
   if (nrow(ev)) ev$membership <- membership[ev$j] else ev$membership <- integer()
 
   rec <- .dk_recover_events(
-    x, ev, membership, if (recovery_method %in% c("neighbor", "tree_local_factor")) z else NULL,
+    x, ev, membership, if (recovery_method %in% c(
+      "p1_stabilized_state", "neighbor", "tree_local_factor"
+    )) z else NULL,
     recovery_method = recovery_method,
     factor_rank = factor_rank, factor_features = factor_features,
     factor_ridge = factor_ridge, min_feature_observed = min_feature_observed,
@@ -298,7 +370,12 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     tree_weight = tree_weight, tree_tau = tree_tau,
     local_k = local_k, candidate_k = candidate_k,
     min_effective_donors = min_effective_donors,
-    local_info_kappa = local_info_kappa
+    local_info_kappa = local_info_kappa,
+    factor_crossfit_folds = factor_crossfit_folds,
+    factor_crossfit_seed = factor_crossfit_seed,
+    support_adaptive_rank = support_adaptive_rank,
+    bias_kappa = bias_kappa,
+    predictor_smoothing = predictor_smoothing
   )
   ok <- rec$prediction > 0 & is.finite(rec$prediction)
   if (inherits(x, "Matrix")) {
@@ -324,6 +401,8 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     events$factor_features <- rec$factor_features
     events$factor_iterations <- rec$factor_iterations
     events$factor_converged <- rec$factor_converged
+    events$factor_fold <- if (is.null(rec$factor_fold)) integer(nrow(events)) else rec$factor_fold
+    events$bias_calibration <- if (is.null(rec$bias_calibration)) numeric(nrow(events)) else rec$bias_calibration
     events$recovery_method <- rec$recovery_method
     events$target_mode <- rec$target_mode
     events$cell_prediction <- rec$cell_prediction
@@ -344,7 +423,8 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     events$predictability <- numeric(); events$shrinkage <- numeric()
     events$n_observed_gene <- integer(); events$factor_rank <- integer()
     events$factor_features <- integer(); events$factor_iterations <- integer()
-    events$factor_converged <- logical(); events$recovery_method <- character()
+    events$factor_converged <- logical(); events$factor_fold <- integer()
+    events$bias_calibration <- numeric(); events$recovery_method <- character()
     events$target_mode <- character(); events$cell_prediction <- numeric()
     events$cell_available <- logical(); events$n_donors <- integer()
     events$bandwidth <- numeric(); events$local_positive_mean <- numeric()
@@ -354,7 +434,9 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     events$changed <- logical()
   }
 
-  uncertainty_available <- recovery_method %in% c("masked_factor", "tree_local_factor") &&
+  uncertainty_available <- recovery_method %in% c(
+    "p1_stabilized_state", "masked_factor", "tree_local_factor"
+  ) &&
     (!any(ok) || all(is.finite(rec$prediction_sd[ok]) & rec$prediction_sd[ok] >= 0))
   predictive_variance <- NULL
   if (uncertainty_available) {
@@ -391,6 +473,11 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
       local_k = local_k, candidate_k = candidate_k,
       min_effective_donors = min_effective_donors,
       local_info_kappa = local_info_kappa,
+      factor_crossfit_folds = as.integer(factor_crossfit_folds),
+      factor_crossfit_seed = as.integer(factor_crossfit_seed),
+      support_adaptive_rank = support_adaptive_rank,
+      bias_kappa = bias_kappa,
+      predictor_smoothing = predictor_smoothing,
       neighbor_k = neighbor_k, neighbor_sigma = neighbor_sigma,
       min_positive_neighbors = min_positive_neighbors,
       neighbor_positive_only = neighbor_positive_only,
@@ -429,7 +516,9 @@ print.DropoutKillerResult <- function(x, ...) {
   if (!is.null(x$settings$detection_scope)) cat(" detection scope:", x$settings$detection_scope, "\n")
   cat(" recovery engine:", x$settings$recovery_method, "\n")
   if (!is.null(x$settings$normalization)) cat(" normalization:", x$settings$normalization, "\n")
-  if (!is.null(x$settings$factor_target) && x$settings$recovery_method %in% c("masked_factor", "tree_local_factor"))
+  if (!is.null(x$settings$factor_target) && x$settings$recovery_method %in% c(
+    "p1_stabilized_state", "masked_factor", "tree_local_factor"
+  ))
     cat(" recovery target:", x$settings$factor_target, "\n")
   cat(" selected dropout events:", nrow(x$events), "\n")
   cat(" recovered events:", if (nrow(x$events)) sum(x$events$changed) else 0L, "\n")

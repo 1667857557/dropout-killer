@@ -1,1 +1,5 @@
+^\.git$
 ^\.github$
+^\.\.Rcheck$
+^DropoutKiller.*\.tar\.gz$
+^DropoutKiller\.Rcheck$
