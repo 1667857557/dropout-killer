@@ -1,3 +1,11 @@
+# DropoutKiller 0.7.0
+
+- Promoted `recovery_method = "p1_stabilized_state"` to the high-level production default after the full-cell PBMC artificial-dropout benchmark.
+- Added deterministic target-gene cross-fitting, one row-stochastic hierarchy/embedding smoothing step on the predictor state, support-adaptive P1 rank, analytic leave-one-out shrinkage, and bias calibration.
+- Kept recovery event-only: observed non-target coordinates remain exactly invariant, and predictive variance is retained for recovered events.
+- Retained `masked_factor`, `tree_local_factor`, and `neighbor` as explicit comparator engines; the lower-level `recover_dropout_expression()` compatibility default remains `masked_factor`.
+- Added compiled batched ridge/state kernels and architecture regression tests.
+
 # DropoutKiller 0.6.0
 
 - Preserved the full `cluster_walktrap()` hierarchy inside `DropoutKillerMembership` instead of discarding it after the gamma cut. Exact builds retain per-stratum hierarchy and a cached tree index; approximate builds retain the anchor hierarchy and fall back to embedding-only weighting when a queried cell has no exact tree leaf.

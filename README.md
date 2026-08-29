@@ -2,7 +2,7 @@
 
 `DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It never overwrites observed non-dropout coordinates and does not use external PPI/pathway/GRN priors.
 
-Version 0.6 keeps detection and recovery as separate statistical problems. Following the real-data artificial-dropout benchmark, production zero detection is now **native-ALRA-style global detection within each major cell class**, while SuperCell memberships and hierarchy remain local recovery structures.
+Version 0.7 keeps detection and recovery as separate statistical problems. Production zero detection is **native-ALRA-style global detection within each major cell class**. Production imputation is now **P1_STABILIZED_STATE**, selected by the full-cell artificial-dropout benchmark; SuperCell membership, retained hierarchy, and the biological embedding define its target-safe predictor geometry.
 
 ```text
 raw expression X + major cell class + biological embedding
@@ -27,7 +27,10 @@ raw expression X + major cell class + biological embedding
           +---------------+---------------+
                           |
                           v
-                 local recovery engines
+                 P1 stabilized state
+                          |
+                          v
+             selective event-only recovery
 ```
 
 ## Detection
@@ -65,6 +68,24 @@ detection_method = "alra_quantile"
 ```
 
 The benchmark motivating the default change showed that strict membership-local detection could lose substantial sensitivity in 8–49-cell memberships, whereas global ALRA retained high artificial-dropout recall. The detector and recovery scopes are therefore deliberately separated.
+
+## Production imputation: P1_STABILIZED_STATE
+
+The high-level default is:
+
+```r
+recovery_method = "p1_stabilized_state"
+```
+
+For every deterministic target-gene fold, the fold is excluded before the predictor state is constructed. Standardized non-target predictors then receive exactly one row-stochastic smoothing step over the hierarchy/embedding geometry:
+
+```text
+Z_stable = (1 - rho) Z + rho Z P'
+```
+
+With `rho = 0.25` by default, SVD is applied to this stabilized predictor state and positive donors train the P1 ridge model with analytic leave-one-out shrinkage and bias calibration. Only the predictor state is smoothed; final expression values are never graph-smoothed. The deployed defaults reproduce the validated architecture: five target folds, ridge 2, support-adaptive rank, and `bias_kappa = 10`.
+
+Observed non-target coordinates remain exactly invariant. `masked_factor`, `tree_local_factor`, and `neighbor` remain explicit comparator engines.
 
 ## Why retain the SuperCell hierarchy?
 
@@ -231,27 +252,27 @@ fit <- dropout_killer(
   gamma = 150,
   detection_method = "alra_global_by_group",
   quantile_prob = 0.001,
-  recovery_method = "tree_local_factor",
+  recovery_method = "p1_stabilized_state",
   factor_target = "positive",
-  tree_weight = 0.5,
-  local_k = 30,
-  candidate_k = 100,
-  min_effective_donors = 5,
-  local_info_kappa = 5,
   factor_rank = 5,
   factor_features = 2000,
-  factor_ridge = 1
+  factor_ridge = 2,
+  min_target_observed = 8,
+  factor_crossfit_folds = 5,
+  support_adaptive_rank = TRUE,
+  bias_kappa = 10,
+  predictor_smoothing = 0.25
 )
 
 fit$expression
 fit$detection$membership_stats
 fit$membership_fit$hierarchies
-fit$local_geometry$W
+fit$local_geometry$same$W
 fit$events[, c(
   "gene", "cell", "detection_block", "alra_margin", "recovered",
-  "local_positive_mean", "local_positive_prevalence",
-  "effective_donors", "predictability", "shrinkage",
-  "prediction_sd"
+  "n_observed_gene", "factor_rank", "factor_fold",
+  "bias_calibration", "shrinkage", "prediction_sd",
+  "recovery_method"
 )]
 fit$predictive_variance
 validate_dropout_result(fit, x)
@@ -272,7 +293,12 @@ rec <- recover_dropout_expression(
   mask = dropout_mask,
   membership = membership_fit,
   embedding = pca,
-  recovery_method = "tree_local_factor",
+  recovery_method = "p1_stabilized_state",
+  factor_ridge = 2,
+  min_target_observed = 8,
+  factor_crossfit_folds = 5,
+  support_adaptive_rank = TRUE,
+  bias_kappa = 10,
   factor_target = "positive",
   return_details = TRUE
 )
@@ -289,7 +315,17 @@ Global-ALRA detection events include:
 - `threshold`
 - `alra_margin = lowrank - threshold`
 
-Tree-local recovery adds:
+P1 stabilized-state recovery adds:
+
+- `n_observed_gene` / `n_donors`
+- `factor_rank`
+- `factor_fold`
+- `bias_calibration`
+- `shrinkage`
+- `prediction_sd`
+- `recovery_method` (`p1_stabilized_state`, `positive_membership_mean`, or `unavailable`)
+
+Tree-local comparison recovery additionally reports:
 
 - `local_positive_mean`
 - `local_positive_variance`
@@ -314,7 +350,8 @@ Recovery must be validated with the same oracle masks across component ablations
 4. tree + embedding weighted mean;
 5. current `masked_factor`;
 6. local mean + residual factor;
-7. batched tree-local residual factor.
+7. batched tree-local residual factor;
+8. `p1_stabilized_state`.
 
 Required scenarios include MCAR positive masking, original-UMI count strata, Binomial-zero, and full binomial thinning followed by re-normalization, PCA, SuperCell reconstruction, detection, and recovery.
 
@@ -387,4 +424,4 @@ obj <- dropout_killer_seurat(
 
 With the default detector, `group_by` should identify the major cell class used for global ALRA zero detection. `split_by` remains a recovery boundary. Recovered values are continuous normalized-expression estimates and belong in assay data, not raw integer counts. Do not treat the completed mean matrix as an error-free count matrix for DE, trajectory, or network inference.
 
-See `inst/ALGORITHM.md` for the historical detector/v0.5 factor contract and `inst/TREE_LOCAL_RECOVERY.md` for the v0.6 hierarchy-aware recovery contract.
+See `inst/ALGORITHM.md` for the historical detector/v0.5 factor contract and `inst/TREE_LOCAL_RECOVERY.md` for the v0.6 hierarchy-aware comparison engine.

@@ -170,7 +170,8 @@
 .dk_weighted_local_residual_target <- function(xg, stats_g, scores, W, query,
                                                ridge = 1, min_target_observed = 20L,
                                                min_effective_donors = 5,
-                                               local_info_kappa = 5) {
+                                               local_info_kappa = 5,
+                                               support_adaptive_rank = FALSE) {
   if (!is.numeric(ridge) || length(ridge) != 1L || !is.finite(ridge) || ridge < 0)
     stop("factor_ridge must be >= 0", call. = FALSE)
   nq <- length(query)
@@ -197,7 +198,13 @@
   keep <- is.finite(aggregate_w) & aggregate_w > 0 & is.finite(residual[donor_all])
   donor <- donor_all[keep]; aggregate_w <- aggregate_w[keep]
   if (length(donor) < max(as.integer(min_target_observed), 2L)) return(ans)
-  Xo <- cbind(1, scores[donor, , drop = FALSE]); y <- residual[donor]; p <- ncol(Xo)
+  scores_use <- scores
+  if (support_adaptive_rank) {
+    k_use <- min(ncol(scores), max(0L, floor((length(donor) - 3L) / 2L)))
+    if (k_use < 1L) return(ans)
+    scores_use <- scores[, seq_len(k_use), drop = FALSE]
+  }
+  Xo <- cbind(1, scores_use[donor, , drop = FALSE]); y <- residual[donor]; p <- ncol(Xo)
   if (length(donor) < p + 2L) return(ans)
   scale_w <- aggregate_w / mean(aggregate_w); sw <- sqrt(scale_w)
   Xw <- Xo * sw; yw <- y * sw
@@ -213,7 +220,7 @@
   qpred <- max(0, min(1, qpred))
   qinfo <- if (local_info_kappa > 0) neff_q / (neff_q + local_info_kappa) else rep(1, nq)
   qfinal <- qpred * qinfo; qfinal[!supported] <- 0
-  Xq <- cbind(1, scores[query, , drop = FALSE]); raw <- as.vector(Xq %*% beta)
+  Xq <- cbind(1, scores_use[query, , drop = FALSE]); raw <- as.vector(Xq %*% beta)
   pred <- pmax(mu_q + qfinal * raw, 0)
   Wqd <- as.matrix(W[query, donor, drop = FALSE])
   ans$n_donors <- rowSums(Wqd > 0); ans$effective_n <- neff_q
@@ -237,6 +244,7 @@
     ans$prediction_sd[factor_use] <- sqrt(pmax(0, pv[factor_use]))
     ans$method[factor_use] <- "tree_local_factor"
   }
+  ans$factor_rank_used <- ncol(scores_use)
   ans
 }
 
@@ -248,13 +256,23 @@
                                           tree_weight = 0.5, tree_tau = NULL,
                                           local_k = 30L, candidate_k = 100L,
                                           min_effective_donors = 5,
-                                          local_info_kappa = 5) {
+                                          local_info_kappa = 5,
+                                          factor_crossfit_folds = 1L,
+                                          factor_crossfit_seed = 1L,
+                                          support_adaptive_rank = FALSE) {
+  factor_crossfit_folds <- as.integer(factor_crossfit_folds)[1L]
+  factor_crossfit_seed <- as.integer(factor_crossfit_seed)[1L]
+  if (!is.finite(factor_crossfit_folds) || factor_crossfit_folds < 1L)
+    stop("factor_crossfit_folds must be >= 1", call. = FALSE)
+  if (!is.finite(factor_crossfit_seed))
+    stop("factor_crossfit_seed must be finite", call. = FALSE)
   n_ev <- nrow(events)
   out <- list(
     prediction = rep(NA_real_, n_ev), factor_prediction = rep(NA_real_, n_ev),
     prediction_sd = rep(NA_real_, n_ev), predictability = numeric(n_ev),
     shrinkage = numeric(n_ev), n_observed_gene = integer(n_ev),
     factor_rank = integer(n_ev), factor_features = integer(n_ev),
+    factor_fold = integer(n_ev), bias_calibration = numeric(n_ev),
     factor_iterations = integer(n_ev), factor_converged = logical(n_ev),
     recovery_method = rep("unavailable", n_ev), target_mode = rep("positive", n_ev),
     local_positive_mean = rep(NA_real_, n_ev), local_positive_variance = rep(NA_real_, n_ev),
@@ -275,43 +293,59 @@
     bid <- as.integer(b); qev <- event_by_block[[b]]; cells <- which(geometry$block_id == bid)
     ev_i <- events$i[qev]; ev_j <- events$j[qev]
     local_events <- data.frame(i = ev_i, j = match(ev_j, cells))
-    fit <- .dk_membership_factor_scores(
-      x, cells, local_events, rank = factor_rank, feature_max = factor_features,
-      min_feature_observed = min_feature_observed
-    )
-    scores <- if (is.null(fit)) NULL else fit$scores
     Wb <- geometry$W[cells, cells, drop = FALSE]; W2b <- geometry$W2[cells, cells, drop = FALSE]
+    Wb_dense <- as.matrix(Wb)
     geob <- list(W = Wb, W2 = W2b, Wt = Matrix::t(Wb), W2t = Matrix::t(W2b), total_weight = geometry$total_weight[cells])
     gene_index <- split(seq_along(ev_i), ev_i)
     genes <- as.integer(names(gene_index))
-    for (start in seq.int(1L, length(genes), by = batch_size)) {
-      gset <- genes[start:min(length(genes), start + batch_size - 1L)]
-      xb <- x[gset, cells, drop = FALSE]; sb <- .dk_local_gene_stats_batch(xb, geob)
-      for (kk in seq_along(gset)) {
-        g <- gset[kk]; qg0 <- gene_index[[as.character(g)]]; qg <- qev[qg0]
-        query_global <- ev_j[qg0]; query <- match(query_global, cells)
-        xg <- as.numeric(x[g, cells])
-        stats_g <- list(mean = sb$mean[kk, ], variance = sb$variance[kk, ],
-                        effective_n = sb$effective_n[kk, ], prevalence = sb$prevalence[kk, ],
-                        positive = sb$positive[kk, ])
-        tg <- .dk_weighted_local_residual_target(
-          xg, stats_g, scores, Wb, query,
-          ridge = factor_ridge, min_target_observed = min_target_observed,
-          min_effective_donors = min_effective_donors, local_info_kappa = local_info_kappa
+    folds <- .dk_target_fold(genes, factor_crossfit_folds, factor_crossfit_seed)
+    for (fold in unique(folds)) {
+      fold_genes <- genes[folds == fold]
+      fold_event <- ev_i %in% fold_genes
+      fit <- .dk_membership_factor_scores(
+        x, cells, local_events[fold_event, , drop = FALSE],
+        rank = factor_rank, feature_max = factor_features,
+        min_feature_observed = min_feature_observed
+      )
+      scores <- if (is.null(fit)) NULL else fit$scores
+      for (start in seq.int(1L, length(fold_genes), by = batch_size)) {
+        gset <- fold_genes[start:min(length(fold_genes), start + batch_size - 1L)]
+        xb <- x[gset, cells, drop = FALSE]; sb <- .dk_local_gene_stats_batch(xb, geob)
+        qg0_batch <- which(ev_i %in% gset)
+        qg_batch <- qev[qg0_batch]
+        query_gene <- match(ev_i[qg0_batch], gset)
+        query_global <- ev_j[qg0_batch]
+        query <- match(query_global, cells)
+        scores_cpp <- if (is.null(scores)) matrix(numeric(), length(cells), 0L) else scores
+        cpp <- dk_batch_tree_ridge_positive_cpp(
+          as.matrix(xb), sb$mean, sb$variance, sb$effective_n,
+          Wb_dense, scores_cpp, query_gene, query,
+          factor_ridge, as.integer(min_target_observed),
+          min_effective_donors, local_info_kappa,
+          support_adaptive_rank
         )
-        out$prediction[qg] <- tg$prediction; out$factor_prediction[qg] <- tg$residual_prediction
-        out$prediction_sd[qg] <- tg$prediction_sd; out$predictability[qg] <- tg$predictability
-        out$shrinkage[qg] <- tg$shrinkage; out$n_observed_gene[qg] <- tg$n_donors
-        out$recovery_method[qg] <- tg$method
-        out$local_positive_mean[qg] <- stats_g$mean[query]
-        out$local_positive_variance[qg] <- stats_g$variance[query]
-        out$local_positive_prevalence[qg] <- stats_g$prevalence[query]
-        out$effective_donors[qg] <- stats_g$effective_n[query]
-        out$tree_distance_weighted_mean[qg] <- geometry$tree_distance_weighted_mean[query_global]
-        out$embedding_distance_weighted_mean[qg] <- geometry$embedding_distance_weighted_mean[query_global]
+        out$prediction[qg_batch] <- cpp$prediction
+        out$factor_prediction[qg_batch] <- cpp$residual_prediction
+        out$prediction_sd[qg_batch] <- cpp$prediction_sd
+        out$predictability[qg_batch] <- cpp$predictability
+        out$shrinkage[qg_batch] <- cpp$shrinkage
+        out$n_observed_gene[qg_batch] <- cpp$n_donors
+        out$recovery_method[qg_batch] <- c(
+          "unavailable", "tree_local_mean", "tree_local_factor"
+        )[cpp$method + 1L]
+        out$factor_rank[qg_batch] <- cpp$factor_rank_used
+        out$factor_fold[qg_batch] <- fold
+        stat_idx <- cbind(query_gene, query)
+        out$local_positive_mean[qg_batch] <- sb$mean[stat_idx]
+        out$local_positive_variance[qg_batch] <- sb$variance[stat_idx]
+        out$local_positive_prevalence[qg_batch] <- sb$prevalence[stat_idx]
+        out$effective_donors[qg_batch] <- sb$effective_n[stat_idx]
+        out$tree_distance_weighted_mean[qg_batch] <- geometry$tree_distance_weighted_mean[query_global]
+        out$embedding_distance_weighted_mean[qg_batch] <- geometry$embedding_distance_weighted_mean[query_global]
         if (!is.null(fit)) {
-          out$factor_rank[qg] <- fit$rank; out$factor_features[qg] <- fit$n_features
-          out$factor_iterations[qg] <- fit$iterations; out$factor_converged[qg] <- fit$converged
+          out$factor_features[qg_batch] <- fit$n_features
+          out$factor_iterations[qg_batch] <- fit$iterations
+          out$factor_converged[qg_batch] <- fit$converged
         }
       }
     }
