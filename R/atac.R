@@ -2,13 +2,7 @@
 # Internal helpers used by the existing Seurat orchestration path.
 
 .dk_atac_binary_matrix <- function(x) {
-  if (inherits(x, "Matrix")) {
-    y <- x
-    if (!length(y@x)) return(Matrix::Matrix(y, sparse = TRUE))
-    y@x[] <- 1
-    return(Matrix::drop0(y))
-  }
-  Matrix::Matrix(x > 0, sparse = TRUE)
+  Matrix::drop0(Matrix::Matrix(x > 0, sparse = TRUE))
 }
 
 .dk_atac_capture_probability <- function(counts, group = NULL, max_iter = 25L,
@@ -119,7 +113,7 @@
   state <- .dk_atac_membership_state(y, membership, q)
   chunks <- list(); nchunk <- 0L; candidate_total <- 0
 
-  for (mm in seq_along(state$levels)) {
+  for (mm in seq_along(state$levels))) {
     m <- state$levels[mm]; ids <- which(membership == m)
     if (length(ids) <= 1L) next
     nobs <- as.numeric(state$n_positive[, mm])
