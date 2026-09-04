@@ -26,7 +26,8 @@ test_that("small WNN strata stay on the supplied weighted graph when approximati
     graph_dims = 3, return_graph = TRUE)
   expect_false(any(fit$strata$approximate))
   expect_true(all(fit$strata$geometry == "weighted_graph"))
-  expect_equal(sort(igraph::E(fit$graphs[["A"]])$weight), sort(a[1:6, 1:6][a[1:6, 1:6] > 0]) / 2,
+  expect_equal(igraph::ecount(fit$graphs[["A"]]), 5)
+  expect_equal(sort(igraph::E(fit$graphs[["A"]])$weight), seq(0.5, 0.9, by = 0.1),
     tolerance = 1e-12)
 })
 
