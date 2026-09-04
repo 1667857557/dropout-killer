@@ -1,26 +1,22 @@
 Package: DropoutKiller
 Type: Package
-Title: Selective Dropout Recovery for Single-Cell RNA Sequencing
-Version: 0.7.0
+Title: Selective Dropout Recovery for Single-Cell and Multiome Data
+Version: 0.8.0
 Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.noreply.github.com", role = c("aut", "cre"))
 Author: DropoutKiller Developers [aut, cre]
 Maintainer: DropoutKiller Developers <dropoutkiller@users.noreply.github.com>
-Description: Detects technical zero events in single-cell RNA-seq data after
-    ALRA-style library-size normalization and log transformation. The production
-    detector applies native-ALRA-style randomized low-rank reconstruction and the
-    gene-wise empirical 0.1 percent quantile zero gate globally within each major
-    cell class, while SuperCell memberships and retained hierarchy remain reserved
-    for biologically local recovery. Historical membership-local empirical-Bayes
-    and ALRA-quantile detectors remain available for explicit comparison. Recovery
-    can combine hierarchy proximity with the original biological embedding so
-    nearer positive donors contribute more strongly to query-specific expression
-    baselines and local coexpression residual models. Predictive uncertainty is
-    retained and observed non-dropout values are never overwritten on the
-    normalized working scale. The production imputation framework is the
-    target-safe cross-fitted P1 stabilized state, with one geometry-aware
-    predictor-smoothing step before ridge recovery. Expert comparison routes
-    include local residual correction, hierarchy partial pooling, simplex donor
-    reconstruction, and count evidence updates.
+Description: Detects and selectively recovers technical zero events in single-cell
+    RNA-seq and paired RNA plus ATAC multiome data. The RNA production detector
+    applies native-ALRA-style randomized low-rank reconstruction and a gene-wise
+    empirical low-rank zero gate within major cell classes, while SuperCell
+    memberships and retained hierarchy remain reserved for biologically local
+    recovery. For 10x Multiome data, weighted-nearest-neighbor graphs can define
+    one frozen multimodal membership shared by RNA and ATAC. ATAC zeros are modeled
+    with separate latent accessibility and cell-specific capture states, and
+    high-confidence accessible-but-missed coordinates are recovered with
+    posterior-accessibility-weighted, capture-aware local Gamma-Poisson empirical
+    Bayes estimation. Observed non-dropout values and raw fragment evidence are
+    never overwritten.
 License: MIT + file LICENSE
 URL: https://github.com/1667857557/dropout-killer
 BugReports: https://github.com/1667857557/dropout-killer/issues
