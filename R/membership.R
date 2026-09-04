@@ -60,7 +60,9 @@
     a <- a[hit, hit, drop = FALSE]
   }
   rownames(a) <- colnames(a) <- cells
-  if (length(a@x)) a@x[!is.finite(a@x) | a@x < 0] <- 0
+  if (!"x" %in% methods::slotNames(a)) a <- a * 1
+  if ("x" %in% methods::slotNames(a) && length(a@x))
+    a@x[!is.finite(a@x) | a@x < 0] <- 0
   a <- Matrix::drop0((a + Matrix::t(a)) / 2)
   a <- a - Matrix::Diagonal(x = Matrix::diag(a))
   a <- Matrix::drop0(a)
@@ -83,7 +85,12 @@
     use <- order(ee$values, decreasing = TRUE)[seq_len(min(k, length(ee$values)))]
     z <- ee$vectors[, use, drop = FALSE]
   } else {
-    z <- irlba::irlba(s, nv = k, nu = k)$u
+    # The normalized adjacency spectrum lies in [-1, 1]. Shifting by I makes
+    # it positive semidefinite without changing eigenvectors, so irlba's
+    # largest-singular-value ordering equals largest algebraic eigenvalue
+    # ordering and matches the dense symmetric eigen() branch.
+    shifted <- s + Matrix::Diagonal(n = n)
+    z <- irlba::irlba(shifted, nv = k, nu = k)$u
   }
   rownames(z) <- cells; colnames(z) <- paste0("WNN", seq_len(ncol(z)))
   z
@@ -239,8 +246,10 @@ build_supercell_membership <- function(embedding = NULL, group = NULL, split_by 
   membership <- integer(n); info <- list(); graphs <- list(); hierarchies <- list(); tree_indices <- list(); offset <- 0L
   for (s in seq_along(levels(strata))) {
     idx <- which(strata == levels(strata)[s]); target_n <- max(1L, min(length(idx), as.integer(round(length(idx) / gamma))))
-    direct_graph <- graph_source && !(isTRUE(approximate) ||
-      (identical(approximate, "auto") && length(idx) > max(50000L, approx_n)))
+    requested_approx <- isTRUE(approximate) || (identical(approximate, "auto") && length(idx) > 50000L)
+    anchor_n <- min(length(idx), max(as.integer(approx_n), 3L * target_n))
+    will_approx <- requested_approx && length(idx) > approx_n && target_n < length(idx) && anchor_n < length(idx)
+    direct_graph <- graph_source && !will_approx
     if (direct_graph) {
       sg <- igraph::induced_subgraph(g0, vids = cells[idx]); fit0 <- .dk_cluster_weighted_graph(sg, target_n, method)
       fit <- list(membership = fit0$membership, graph = fit0$graph, hierarchy = fit0$hierarchy,
