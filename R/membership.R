@@ -62,7 +62,7 @@
   rownames(a) <- colnames(a) <- cells
   if (length(a@x)) a@x[!is.finite(a@x) | a@x < 0] <- 0
   a <- Matrix::drop0((a + Matrix::t(a)) / 2)
-  Matrix::diag(a) <- 0
+  a <- a - Matrix::Diagonal(x = Matrix::diag(a))
   a <- Matrix::drop0(a)
   g <- igraph::graph_from_adjacency_matrix(a, mode = "undirected", weighted = TRUE, diag = FALSE)
   igraph::V(g)$name <- cells
