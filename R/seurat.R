@@ -35,6 +35,12 @@ dropout_killer_seurat <- function(
       Seurat::DefaultAssay(object)
     }
   }
+  validate_assay_name <- function(x, label) {
+    if (!is.character(x) || length(x) != 1L || is.na(x) || !nzchar(x))
+      stop(label, " must be one non-empty assay name", call. = FALSE)
+    x
+  }
+  assay <- validate_assay_name(assay, "assay")
   meta <- object[[]]
 
   group <- NULL; split <- NULL
@@ -48,6 +54,9 @@ dropout_killer_seurat <- function(
   }
 
   if (modality == "rna") {
+    new_assay <- validate_assay_name(new_assay, "new_assay")
+    if (identical(new_assay, assay))
+      stop("new_assay must differ from the input assay; DropoutKiller never overwrites raw input assays", call. = FALSE)
     x <- Seurat::GetAssayData(object = object, assay = assay, slot = slot)
     emb <- Seurat::Embeddings(object, reduction = reduction)
     dims <- as.integer(dims); dims <- dims[dims >= 1L & dims <= ncol(emb)]
@@ -71,6 +80,9 @@ dropout_killer_seurat <- function(
     object@misc <- misc
     if (return_result) list(object = object, result = res) else object
   } else {
+    atac_assay <- validate_assay_name(atac_assay, "atac_assay")
+    if (identical(assay, atac_assay))
+      stop("assay and atac_assay must identify distinct RNA and ATAC assays", call. = FALSE)
     if (!assay %in% names(object@assays)) stop("RNA assay not found in Seurat object", call. = FALSE)
     if (!atac_assay %in% names(object@assays)) stop("atac_assay not found in Seurat object", call. = FALSE)
     if (!wnn_graph %in% names(object@graphs))
@@ -133,6 +145,13 @@ dropout_killer_seurat <- function(
       phi_kappa = atac_phi_kappa, phi_floor = atac_phi_floor)
 
     if (is.null(rna_new_assay)) rna_new_assay <- new_assay
+    rna_new_assay <- validate_assay_name(rna_new_assay, "rna_new_assay")
+    atac_new_assay <- validate_assay_name(atac_new_assay, "atac_new_assay")
+    raw_assays <- c(assay, atac_assay)
+    if (rna_new_assay %in% raw_assays || atac_new_assay %in% raw_assays)
+      stop("recovered assay names must differ from both raw RNA and ATAC input assays", call. = FALSE)
+    if (identical(rna_new_assay, atac_new_assay))
+      stop("rna_new_assay and atac_new_assay must be different", call. = FALSE)
     object[[rna_new_assay]] <- Seurat::CreateAssayObject(data = rna_res$expression)
     object[[atac_new_assay]] <- Seurat::CreateAssayObject(data = atac_res$expression)
     misc <- object@misc
