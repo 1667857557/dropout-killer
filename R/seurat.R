@@ -85,6 +85,14 @@ dropout_killer_seurat <- function(
       stop("assay and atac_assay must identify distinct RNA and ATAC assays", call. = FALSE)
     if (!assay %in% names(object@assays)) stop("RNA assay not found in Seurat object", call. = FALSE)
     if (!atac_assay %in% names(object@assays)) stop("atac_assay not found in Seurat object", call. = FALSE)
+    if (is.null(rna_new_assay)) rna_new_assay <- new_assay
+    rna_new_assay <- validate_assay_name(rna_new_assay, "rna_new_assay")
+    atac_new_assay <- validate_assay_name(atac_new_assay, "atac_new_assay")
+    raw_assays <- c(assay, atac_assay)
+    if (rna_new_assay %in% raw_assays || atac_new_assay %in% raw_assays)
+      stop("recovered assay names must differ from both raw RNA and ATAC input assays", call. = FALSE)
+    if (identical(rna_new_assay, atac_new_assay))
+      stop("rna_new_assay and atac_new_assay must be different", call. = FALSE)
     if (!wnn_graph %in% names(object@graphs))
       stop("wnn_graph not found in Seurat object@graphs; run FindMultiModalNeighbors first", call. = FALSE)
 
@@ -144,14 +152,6 @@ dropout_killer_seurat <- function(
       local_info_kappa = take("local_info_kappa", 5), phi_prior = atac_phi_prior,
       phi_kappa = atac_phi_kappa, phi_floor = atac_phi_floor)
 
-    if (is.null(rna_new_assay)) rna_new_assay <- new_assay
-    rna_new_assay <- validate_assay_name(rna_new_assay, "rna_new_assay")
-    atac_new_assay <- validate_assay_name(atac_new_assay, "atac_new_assay")
-    raw_assays <- c(assay, atac_assay)
-    if (rna_new_assay %in% raw_assays || atac_new_assay %in% raw_assays)
-      stop("recovered assay names must differ from both raw RNA and ATAC input assays", call. = FALSE)
-    if (identical(rna_new_assay, atac_new_assay))
-      stop("rna_new_assay and atac_new_assay must be different", call. = FALSE)
     object[[rna_new_assay]] <- Seurat::CreateAssayObject(data = rna_res$expression)
     object[[atac_new_assay]] <- Seurat::CreateAssayObject(data = atac_res$expression)
     misc <- object@misc
