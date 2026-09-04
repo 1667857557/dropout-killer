@@ -28,7 +28,13 @@ dropout_killer_seurat <- function(
   if (!requireNamespace("Seurat", quietly = TRUE)) stop("Seurat is required", call. = FALSE)
   if (!inherits(object, "Seurat")) stop("object must be a Seurat object", call. = FALSE)
   modality <- match.arg(modality)
-  if (is.null(assay)) assay <- Seurat::DefaultAssay(object)
+  if (is.null(assay)) {
+    assay <- if (modality == "multiome" && "RNA" %in% names(object@assays)) {
+      "RNA"
+    } else {
+      Seurat::DefaultAssay(object)
+    }
+  }
   meta <- object[[]]
 
   group <- NULL; split <- NULL
@@ -65,6 +71,7 @@ dropout_killer_seurat <- function(
     object@misc <- misc
     if (return_result) list(object = object, result = res) else object
   } else {
+    if (!assay %in% names(object@assays)) stop("RNA assay not found in Seurat object", call. = FALSE)
     if (!atac_assay %in% names(object@assays)) stop("atac_assay not found in Seurat object", call. = FALSE)
     if (!wnn_graph %in% names(object@graphs))
       stop("wnn_graph not found in Seurat object@graphs; run FindMultiModalNeighbors first", call. = FALSE)
