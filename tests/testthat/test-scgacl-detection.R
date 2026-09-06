@@ -70,6 +70,47 @@ test_that("scGACL detector selects only raw zero coordinates within supplied gro
                          logical(1))))
 })
 
+test_that("scGACL gene batching and sparse storage do not change detector results", {
+  base <- rbind(
+    g1 = c(0, 0, 0, 1, 1, 2, 3, 5, 8, 13, 21, 34),
+    g2 = c(0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 8, 13),
+    g3 = c(0, 1, 0, 1, 2, 3, 5, 8, 8, 13, 13, 21),
+    g4 = c(0, 0, 2, 2, 3, 3, 4, 5, 7, 9, 12, 18),
+    g5 = c(1, 0, 1, 0, 2, 2, 3, 5, 6, 8, 10, 15)
+  )
+  x <- cbind(base, base)
+  rownames(x) <- paste0("g", seq_len(nrow(x)))
+  colnames(x) <- paste0("c", seq_len(ncol(x)))
+  group <- rep(c("A", "B"), each = ncol(base))
+
+  dense_one <- DropoutKiller:::.dk_scgacl_detect(
+    x, group = group, dropout_threshold = 0.5, gene_batch_size = 1L
+  )
+  dense_many <- DropoutKiller:::.dk_scgacl_detect(
+    x, group = group, dropout_threshold = 0.5, gene_batch_size = 256L
+  )
+  sparse_many <- DropoutKiller:::.dk_scgacl_detect(
+    Matrix::Matrix(x, sparse = TRUE), group = group,
+    dropout_threshold = 0.5, gene_batch_size = 256L
+  )
+
+  key <- function(d) paste(d$events$i, d$events$j, sep = ":")
+  expect_equal(key(dense_one), key(dense_many))
+  expect_equal(key(dense_many), key(sparse_many))
+  expect_equal(dense_one$events$confidence, dense_many$events$confidence,
+               tolerance = 1e-12)
+  expect_equal(dense_many$events$confidence, sparse_many$events$confidence,
+               tolerance = 1e-12)
+  expect_equal(dense_one$events$mixture_rate, dense_many$events$mixture_rate,
+               tolerance = 1e-12)
+  expect_equal(dense_one$events$gamma_shape, dense_many$events$gamma_shape,
+               tolerance = 1e-12)
+  expect_equal(dense_one$membership_stats$zero_tests,
+               dense_many$membership_stats$zero_tests)
+  expect_equal(dense_many$membership_stats$zero_tests,
+               sparse_many$membership_stats$zero_tests)
+})
+
 test_that("high-level default is scGACL and detector is independent of recovery normalization", {
   base <- rbind(
     g1 = c(0, 0, 0, 1, 1, 2, 3, 5, 8, 13, 21, 34),
