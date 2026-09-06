@@ -1,13 +1,19 @@
 #' Run DropoutKiller on a Seurat object
 #'
-#' By default the raw `counts` slot is supplied to `dropout_killer()`, which
-#' applies the ALRA library-size normalization to 10,000 counts per cell followed
-#' by `log1p`. The recovered matrix is written to the data slot of a new assay;
-#' it is not presented as raw counts because recovery produces continuous values.
+#' The default scGACL detector requires the raw `counts` slot together with a
+#' `group_by` metadata column defining cell subpopulations (typically major cell
+#' type). The detector itself applies `log(1.01 + raw_count)` exactly as in the
+#' released scGACL implementation. Independently, the recovery working matrix is
+#' ALRA library-size normalized to 10,000 counts per cell followed by `log1p`
+#' when `normalize = TRUE`.
+#'
+#' The recovered matrix is written to the data slot of a new assay; it is not
+#' presented as raw counts because recovery produces continuous values.
 #'
 #' If a pre-normalized slot such as `data` is selected explicitly, normalization
-#' defaults to `FALSE` to avoid applying the ALRA transform twice. This can be
-#' overridden with `normalize`.
+#' defaults to `FALSE`. Such a slot is not valid input for the default
+#' `scgacl_gamma_normal` detector; explicitly choose a compatible detector if
+#' raw counts are not supplied.
 #'
 #' @export
 dropout_killer_seurat <- function(object, assay = NULL, slot = "counts", reduction = "pca",

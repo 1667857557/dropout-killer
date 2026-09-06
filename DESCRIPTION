@@ -1,26 +1,26 @@
 Package: DropoutKiller
 Type: Package
 Title: Selective Dropout Recovery for Single-Cell RNA Sequencing
-Version: 0.7.0
+Version: 0.8.0
 Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.noreply.github.com", role = c("aut", "cre"))
 Author: DropoutKiller Developers [aut, cre]
 Maintainer: DropoutKiller Developers <dropoutkiller@users.noreply.github.com>
-Description: Detects technical zero events in single-cell RNA-seq data after
-    ALRA-style library-size normalization and log transformation. The production
-    detector applies native-ALRA-style randomized low-rank reconstruction and the
-    gene-wise empirical 0.1 percent quantile zero gate globally within each major
-    cell class, while SuperCell memberships and retained hierarchy remain reserved
-    for biologically local recovery. Historical membership-local empirical-Bayes
-    and ALRA-quantile detectors remain available for explicit comparison. Recovery
-    can combine hierarchy proximity with the original biological embedding so
-    nearer positive donors contribute more strongly to query-specific expression
-    baselines and local coexpression residual models. Predictive uncertainty is
-    retained and observed non-dropout values are never overwritten on the
-    normalized working scale. The production imputation framework is the
-    target-safe cross-fitted P1 stabilized state, with one geometry-aware
-    predictor-smoothing step before ridge recovery. Expert comparison routes
-    include local residual correction, hierarchy partial pooling, simplex donor
-    reconstruction, and count evidence updates.
+Description: Detects technical zero events in single-cell RNA-seq data and
+    selectively recovers only selected coordinates. The production detector is
+    a source-faithful R port of the scGACL Gamma-Normal mixture detector: raw
+    counts are transformed as log(1.01 + count), one mixture is fitted per gene
+    within each supplied major cell subpopulation, and observed zeros are called
+    from the Gamma-component posterior using the released default threshold of
+    0.5. Original ALRA remains available as an explicit comparator using one
+    all-cell matrix, ALRA library-size normalization, the original singular-value
+    spacing rank heuristic, randomized SVD, and the gene-wise empirical 0.1
+    percent low-rank quantile gate. Historical membership-local empirical-Bayes
+    and ALRA-quantile detectors remain available for explicit comparison.
+    Detection and recovery scales are separated: scGACL uses raw counts while
+    recovery can use the ALRA library-size/log working scale. Production recovery
+    is the target-safe cross-fitted P1 stabilized state with hierarchy/embedding
+    predictor smoothing, positive-donor ridge prediction, predictive uncertainty,
+    and exact preservation of observed coordinates on the recovery working scale.
 License: MIT + file LICENSE
 URL: https://github.com/1667857557/dropout-killer
 BugReports: https://github.com/1667857557/dropout-killer/issues

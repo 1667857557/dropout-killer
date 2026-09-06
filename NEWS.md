@@ -1,3 +1,12 @@
+# DropoutKiller 0.8.0
+
+- Changed the high-level default zero detector to `detection_method = "scgacl_gamma_normal"`, implemented as a source-faithful R port of the released scGACL Gamma-Normal detector (`Hhjyl/scGACL`, `evaluation/dropout_identify.py`). The detector applies `log(1.01 + raw_count)`, fits one five-parameter Gamma-Normal mixture per gene within each supplied `group`, and uses the released posterior threshold `0.5` by default.
+- Kept scGACL detection on the original raw-count matrix while leaving the recovery working scale unchanged. With `normalize = TRUE`, P1 recovery still uses the ALRA library-size-to-10,000 plus `log1p` transform; changing the recovery normalization scale does not change the scGACL mask.
+- Restored ALRA as an explicit source-faithful all-cell comparator with `detection_method = "alra_global"`. Automatic rank selection now keeps the original KlugerLab/ALRA `K = 100`, `noise_start = 80`, six-standard-deviation spacing rule and source validity checks instead of adapting those values to small cell-class blocks. Final reconstruction keeps the original randomized-SVD `q = 10` and gene-wise `|Q_0.001|` gate.
+- Deprecated `detection_method = "alra_global_by_group"`. The compatibility name now emits a warning and delegates to the original all-cell global ALRA implementation; no ALRA-labelled production path silently fits separate major-cell-class SVDs.
+- Added frozen cross-language numerical tests against the released scGACL Python implementation, including Gamma/Normal EM parameters and zero posterior probabilities, plus regression tests for raw-count detector input, subpopulation boundaries, original ALRA scope, and detector/recovery scale separation.
+- The production recovery engine remains `p1_stabilized_state`; this release changes dropout detection, not the validated P1 recovery mathematics.
+
 # DropoutKiller 0.7.0
 
 - Promoted `recovery_method = "p1_stabilized_state"` to the high-level production default after the full-cell PBMC artificial-dropout benchmark.
