@@ -171,12 +171,6 @@
     stop("scGACL point must be a positive finite scalar", call. = FALSE)
   }
 
-  # Source-faithful detector preprocessing:
-  # Hhjyl/scGACL::cluster_get_dropout_rate() applies log(1.01 + raw_count),
-  # with point=log(1.01), before fitting a mixture independently for every
-  # gene inside every cell subpopulation.
-  x_log <- log(1.01 + x)
-
   lev <- unique(grp)
   events <- list()
   stats_out <- vector("list", length(lev))
@@ -185,7 +179,12 @@
   for (ii in seq_along(lev)) {
     label <- lev[ii]
     ids <- which(grp == label)
-    block <- as.matrix(x_log[, ids, drop = FALSE])
+
+    # Source-faithful preprocessing with bounded memory: the released scGACL
+    # code applies log(1.01 + raw_count) before fitting each subpopulation. Doing
+    # the same transform after extracting one subpopulation is algebraically
+    # identical, but avoids densifying the complete sparse gene-by-cell matrix.
+    block <- log(1.01 + as.matrix(x[, ids, drop = FALSE]))
     n_genes <- nrow(block)
     block_events <- 0L
     invalid_genes <- 0L
