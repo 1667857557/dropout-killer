@@ -1,243 +1,164 @@
 # DropoutKiller
 
-`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. It never overwrites observed non-dropout coordinates and does not use external PPI/pathway/GRN priors.
+`DropoutKiller` is an R package for **selective** scRNA-seq dropout recovery. Observed coordinates are never overwritten. Detection and recovery are separate statistical problems.
 
-Version 0.7 keeps detection and recovery as separate statistical problems. Production zero detection is **native-ALRA-style global detection within each major cell class**. Production imputation is now **P1_STABILIZED_STATE**, selected by the full-cell artificial-dropout benchmark; SuperCell membership, retained hierarchy, and the biological embedding define its target-safe predictor geometry.
+Version 0.8 changes only the production **dropout detector**. The default detector is now a source-faithful R implementation of the Gamma-Normal detector released with **scGACL**. The validated recovery default remains **P1_STABILIZED_STATE**.
 
 ```text
-raw expression X + major cell class + biological embedding
-                         |
-                         v
-          ALRA library-size + log normalization
-                         |
-                         v
-      native ALRA rank-k reconstruction per cell class
-                         |
-                         v
-        gene-wise |Q_0.001(low-rank)| zero gate
-                         |
-                         v
-                 selective dropout mask
-                         |
-          +--------------+----------------+
-          |                               |
-          v                               v
-  SuperCell gamma cut              retained tree
-          |                               |
-          +---------------+---------------+
-                          |
-                          v
-                 P1 stabilized state
-                          |
-                          v
-             selective event-only recovery
+raw counts X + major cell class + biological embedding
+        |
+        +---------------- detector ----------------+
+        |                                          |
+        v                                          |
+  log(1.01 + X)                                   |
+        |                                          |
+        v                                          |
+ gene-wise Gamma-Normal EM                         |
+ inside each major cell class                      |
+        |                                          |
+        v                                          |
+ Gamma-component posterior >= 0.5                  |
+        |                                          |
+        +-------------- dropout mask --------------+
+                                                   |
+raw counts X                                       |
+        |                                          |
+        v                                          |
+ALRA library-size + log1p recovery working scale   |
+        |                                          |
+        v                                          |
+ SuperCell hierarchy + embedding                   |
+        |                                          |
+        v                                          |
+ P1 stabilized-state selective recovery <----------+
 ```
 
-## Detection
+## Default detection: scGACL Gamma-Normal mixture
 
-The default detector is now:
+The high-level default is:
 
 ```r
-detection_method = "alra_global_by_group"
+detection_method = "scgacl_gamma_normal"
+scgacl_dropout_threshold = 0.5
 ```
 
-`group` defines the major cell-class detection blocks. Each class is processed independently, but final SuperCell memberships do **not** fragment zero detection. If `group = NULL`, all cells form one global ALRA block.
+This implementation follows the released scGACL detector code in [`Hhjyl/scGACL/evaluation/dropout_identify.py`](https://github.com/Hhjyl/scGACL/blob/main/evaluation/dropout_identify.py) and its released configuration (`IDENTIFY_USE_CELLTYPE = True`, `DROP_THRESHOLD = 0.5`).
 
-For a normalized cell-by-gene block `A`, automatic rank selection follows the original ALRA singular-value-spacing heuristic. With up to `K = 100` singular values, the spacing sequence is
+### Detector input scale
+
+The detector receives the **raw count matrix**, not the ALRA-normalized recovery matrix. For every raw count:
+
+```text
+x = log(1.01 + raw_count)
+point = log(1.01)
+```
+
+Therefore every observed raw zero maps exactly to `point`.
+
+`group` supplies the scGACL subpopulation labels. The released scGACL configuration uses known cell-type labels, so the source-faithful DropoutKiller path requires `group`. It does not silently substitute a different R clustering implementation when labels are absent.
+
+### Per-gene mixture
+
+For every gene inside every supplied group, scGACL fits
+
+```text
+f(x) = lambda Gamma(x; alpha, beta)
+       + (1-lambda) Normal(x; mu, sigma)
+```
+
+where `beta` is the Gamma **rate**. The posterior responsibility of the Gamma component is
+
+```text
+d(x) = lambda Gamma(x; alpha, beta)
+       / [lambda Gamma(x; alpha, beta)
+          + (1-lambda) Normal(x; mu, sigma)]
+```
+
+The released initialization and EM contract are retained:
+
+- `lambda` starts at the fraction of entries equal to `point`;
+- genes with initial `lambda > 0.95` are invalid;
+- if `lambda == 0`, it is initialized to `0.01`;
+- `alpha = 1.5`, `beta = 1` initially;
+- `mu` and population-SD `sigma` are initialized from values `x > point`;
+- the Gamma update solves `log(alpha) - digamma(alpha) = v` and then sets `beta = alpha * sum(w) / sum(w*x)`;
+- EM stops when the squared change in base-10 log likelihood is `<= 0.5`, or after the released iteration limit;
+- genes whose transformed mean lies within `1e-2` of `point` are marked invalid before EM.
+
+Only observed raw zeros are eligible for the DropoutKiller mask. The released scGACL code keeps a zero when its dropout posterior is not below the configured threshold; DropoutKiller therefore uses `d >= 0.5` at the exact boundary.
+
+For a fixed gene and group, all raw zeros have the same transformed value `point`; evaluating the zero posterior once and assigning it to all zero coordinates is algebraically identical to constructing the full dense posterior matrix.
+
+## Detection and recovery use different scales
+
+This separation is intentional:
+
+```text
+scGACL detection: raw counts -> log(1.01 + count)
+P1 recovery:       raw counts -> library normalize to 1e4 -> log1p
+```
+
+Changing `normalization_scale_factor` changes the recovery working scale but does **not** change the scGACL dropout mask.
+
+## Optional original ALRA detector
+
+ALRA remains available explicitly:
+
+```r
+detection_method = "alra_global"
+```
+
+This comparator follows the released KlugerLab/ALRA implementation on **one all-cell matrix**. `group`, `split_by`, and final SuperCell memberships do not fragment ALRA detection.
+
+With normalized cell-by-gene matrix `A`, automatic rank selection uses up to the original `K = 100` singular values:
 
 ```text
 d_i = sigma_i - sigma_{i+1}
 ```
 
-and rank is selected when a spacing exceeds the noise-tail mean by `rank_z = 6` standard deviations. For cell classes with fewer than 100 available singular values, `K` and the noise-tail start are reduced to the available dimensions while retaining at least five tail spacings when possible.
+The noise spacing distribution uses the original `noise_start = 80` tail and rank is the largest spacing more than six standard deviations above that tail mean. The original source validity checks are retained rather than adapting `K` or the noise tail to small cell-class blocks.
 
-The final randomized rank-k reconstruction is thresholded gene-wise using the original ALRA rule:
+The final randomized rank-`k` SVD uses the original `q = 10`, followed by the original gene-wise zero threshold:
 
 ```text
 tau_g = |Q_0.001(Ahat_.g)|
 call_gc = (A_gc == 0) & (Ahat_gc > tau_g)
 ```
 
-There is **no second `confidence >= 0.95` gate** for this detector. `threshold` remains relevant only to the historical confidence-based local detector.
+There is no second confidence gate for ALRA.
 
-The previous membership-local engines remain available explicitly:
+The old name:
+
+```r
+detection_method = "alra_global_by_group"
+```
+
+is deprecated. It emits a warning and delegates to `alra_global`; it no longer fits separate cell-class ALRA models.
+
+Historical membership-local comparison engines remain available:
 
 ```r
 detection_method = "eb_zero_null"
 detection_method = "alra_quantile"
 ```
 
-The benchmark motivating the default change showed that strict membership-local detection could lose substantial sensitivity in 8–49-cell memberships, whereas global ALRA retained high artificial-dropout recall. The detector and recovery scopes are therefore deliberately separated.
+## Production recovery: P1_STABILIZED_STATE
 
-## Production imputation: P1_STABILIZED_STATE
-
-The high-level default is:
+The recovery default remains:
 
 ```r
 recovery_method = "p1_stabilized_state"
 ```
 
-For every deterministic target-gene fold, the fold is excluded before the predictor state is constructed. Standardized non-target predictors then receive exactly one row-stochastic smoothing step over the hierarchy/embedding geometry:
+For every deterministic target-gene fold, the target fold is excluded before predictor construction. Standardized non-target predictors receive one row-stochastic hierarchy/embedding smoothing step:
 
 ```text
-Z_stable = (1 - rho) Z + rho Z P'
+Z_stable = (1-rho) Z + rho Z P'
 ```
 
-With `rho = 0.25` by default, SVD is applied to this stabilized predictor state and positive donors train the P1 ridge model with analytic leave-one-out shrinkage and bias calibration. Only the predictor state is smoothed; final expression values are never graph-smoothed. The deployed defaults reproduce the validated architecture: five target folds, ridge 2, support-adaptive rank, and `bias_kappa = 10`.
+with `rho = 0.25` by default. P1 then fits positive-donor ridge models with target-safe factors, analytic leave-one-out shrinkage, support-adaptive rank, and bias calibration. Final expression values are never graph-smoothed.
 
-Observed non-target coordinates remain exactly invariant. `masked_factor`, `tree_local_factor`, and `neighbor` remain explicit comparator engines.
-
-## Why retain the SuperCell hierarchy?
-
-A SuperCell membership is only a cut through a walktrap hierarchy:
-
-```text
-biological embedding -> kNN graph -> walktrap tree -> gamma cut
-```
-
-Treating all cells in the final cut as exchangeable discards information already present in that tree. Version 0.6 therefore keeps the `cluster_walktrap()` hierarchy and a compact tree index inside `DropoutKillerMembership`.
-
-For production recovery the final membership is the computational and biological borrowing block:
-
-- **explicit `group` / `split_by`**: additional absolute biological recovery boundary;
-- **final SuperCell membership**: absolute recovery borrowing block;
-- **walktrap hierarchy + original embedding**: continuous weighting **inside** that membership.
-
-Detection differs intentionally: `group` is the major cell-class ALRA block, while `split_by` and final membership do not fragment the default detector.
-
-## Tree-local donor weighting
-
-For query cell `c` and candidate donor `j` inside the same final membership, the engine uses
-
-```text
-w_cj = exp[-alpha d_tree(c,j)/tau
-           -(1-alpha) d_embed(c,j)^2/(2 h_c^2)]
-```
-
-where:
-
-- `alpha = tree_weight`;
-- `d_tree` is a normalized walktrap lowest-common-ancestor distance;
-- `d_embed` is distance in the original PCA/Harmony/WNN-like biological embedding;
-- `h_c` is an adaptive bandwidth defined by the `local_k`-th candidate neighbor inside the membership.
-
-If hierarchy distance is unavailable for a pair, the pair uses the embedding component instead of inventing a tree distance.
-
-The sparse weight matrix is built once per final membership block and reused across all target genes. `W^2`, row-weight sums, and cell-level tree/embedding distance diagnostics are cached at the same time.
-
-## Query-specific positive baseline
-
-Once a coordinate has already been selected as technical dropout, the positive-expression magnitude baseline becomes query-specific:
-
-```text
-mu_gc = sum_j w_cj X_gj / sum_j w_cj
-```
-
-using reliable positive donors only.
-
-Its Kish effective donor size is
-
-```text
-n_eff,gc = (sum_j w_cj)^2 / sum_j w_cj^2
-```
-
-and event diagnostics also retain weighted local positive variance and local positive prevalence.
-
-Unlike a whole-membership positive mean, `mu_gc` varies continuously with biological state inside a membership.
-
-For speed, local means, variances, positive prevalence, and `n_eff` are evaluated in gene batches with matrix multiplication rather than by looping over every dropout event.
-
-## Batched residual coexpression
-
-The tree-local engine does not ask coexpression factors to predict the entire target expression. It first defines leave-one-out local residuals
-
-```text
-r_gj = X_gj - mu_gj^(-j)
-```
-
-and predicts only what the tree/embedding-local positive baseline cannot explain.
-
-All current target genes are excluded from factor-state learning, preserving the no-target-leakage path
-
-```text
-X_cell,-targets -> factor state -> target residual
-```
-
-The original implementation fit one weighted ridge for every dropout event, which made runtime scale with millions of high-confidence coordinates. The batched implementation instead fits **one residual model per target gene and final membership**.
-
-Let `Q_g` be the dropout query cells for gene `g`. Donor influence in the single gene-level ridge is still determined by proximity to the actual query cells through the aggregate weight
-
-```text
-wbar_gj = sum_{c in Q_g} w_cj
-```
-
-and
-
-```text
-beta_g = (F' Wbar_g F + P)^-1 F' Wbar_g r_g
-```
-
-so donors close to the target dropout cells receive more influence, but the same gene is not refit separately for every event.
-
-Held-out residual predictions estimate a gene-level `q_pred`. Query-specific local information contributes
-
-```text
-q_info,gc = n_eff,gc / (n_eff,gc + local_info_kappa)
-q_final,gc = q_pred,g * q_info,gc
-```
-
-and the deployed prediction is
-
-```text
-Xhat_gc = max(0, mu_gc + q_final,gc * rhat_gc)
-```
-
-If the factor model has no held-out gain, recovery falls back to the **query-specific local positive mean**, not the whole-membership mean.
-
-## Why the batched implementation is faster
-
-For a membership containing `n_m` cells, biological geometry is constructed once. Recovery then scales approximately with:
-
-```text
-one W_m construction
-+ batched gene x cell local statistics
-+ one small ridge solve per target gene x membership
-+ final indexing at selected dropout coordinates
-```
-
-rather than:
-
-```text
-one small ridge solve per dropout event
-```
-
-Thus millions of selected dropout events increase output/indexing work but no longer create millions of independent regression fits.
-
-## Predictive uncertainty and DV
-
-Tree-local fallback variance retains both positive-expression outcome variance and local-mean estimation uncertainty. For a supported residual model, held-out error is evaluated using the same query-specific deployed `q_final` used in the recovered mean.
-
-The working variance combines residual error, local-mean uncertainty, and weighted factor leverage. It remains an approximate predictive variance and should be checked with held-out coverage.
-
-For positive-conditional recovery, `sample_dropout_expression()` uses Gamma moment matching. For predictive mean `m > 0` and variance `v`,
-
-```text
-shape = m^2 / v
-scale = v / m
-X ~ Gamma(shape, scale)
-```
-
-so `E[X] = m`, `Var(X) = v`, and draws remain positive.
-
-For differential variability,
-
-```text
-Var(lambda_g | Y)
-  = Var_i(E[lambda_ig | Y])
-  + E_i(Var(lambda_ig | Y))
-```
-
-so the deterministic mean matrix alone is not a complete DV representation. Use `prediction_sd`, `predictive_variance`, or repeated completed draws for DV/covariance sensitivity analysis.
+The SuperCell final membership remains an absolute recovery borrowing block. The retained walktrap hierarchy and original biological embedding provide continuous donor weighting inside that membership.
 
 ## Matrix workflow
 
@@ -245,13 +166,13 @@ so the deterministic mean matrix alone is not a complete DV representation. Use 
 library(DropoutKiller)
 
 fit <- dropout_killer(
-  x = x,
+  x = raw_counts,
   embedding = pca,
   group = major_cell_type,
   split_by = condition,
   gamma = 150,
-  detection_method = "alra_global_by_group",
-  quantile_prob = 0.001,
+  detection_method = "scgacl_gamma_normal",
+  scgacl_dropout_threshold = 0.5,
   recovery_method = "p1_stabilized_state",
   factor_target = "positive",
   factor_rank = 5,
@@ -265,149 +186,63 @@ fit <- dropout_killer(
 )
 
 fit$expression
+fit$mask
 fit$detection$membership_stats
-fit$membership_fit$hierarchies
-fit$local_geometry$same$W
 fit$events[, c(
-  "gene", "cell", "detection_block", "alra_margin", "recovered",
-  "n_observed_gene", "factor_rank", "factor_fold",
-  "bias_calibration", "shrinkage", "prediction_sd",
-  "recovery_method"
+  "gene", "cell", "detection_block", "confidence", "recovered",
+  "factor_rank", "prediction_sd", "recovery_method"
 )]
-fit$predictive_variance
-validate_dropout_result(fit, x)
 ```
+
+For the original ALRA comparator:
+
+```r
+fit_alra <- dropout_killer(
+  x = raw_counts,
+  embedding = pca,
+  membership = membership,
+  detection_method = "alra_global",
+  recovery_method = "p1_stabilized_state"
+)
+```
+
+## scGACL event diagnostics
+
+Selected scGACL events include:
+
+- `detection_block`: supplied cell subpopulation;
+- `confidence`: Gamma-component dropout posterior;
+- `mixture_rate`;
+- `gamma_shape`;
+- `gamma_rate`;
+- `normal_mean`;
+- `normal_sd`.
+
+Original-ALRA events instead retain:
+
+- `lowrank`;
+- `threshold`;
+- `alra_margin = lowrank - threshold`.
+
+P1 recovery adds recovery, donor, factor, shrinkage, and uncertainty diagnostics to either detector's event table.
 
 ## Direct recovery for a trusted mask
 
 ```r
-membership_fit <- build_supercell_membership(
-  embedding = pca,
-  group = major_cell_type,
-  split_by = condition,
-  gamma = 150
-)
-
 rec <- recover_dropout_expression(
-  x = x,
-  mask = dropout_mask,
+  x = normalized_expression,
+  mask = trusted_dropout_mask,
   membership = membership_fit,
   embedding = pca,
   recovery_method = "p1_stabilized_state",
-  factor_ridge = 2,
-  min_target_observed = 8,
-  factor_crossfit_folds = 5,
-  support_adaptive_rank = TRUE,
-  bias_kappa = 10,
   factor_target = "positive",
   return_details = TRUE
 )
 ```
 
-Both a bare membership vector and a full `DropoutKillerMembership` object use the final membership as the recovery borrowing block. A supplied hard stratum can further split that block but never expands borrowing beyond the final membership.
-
-## Event diagnostics
-
-Global-ALRA detection events include:
-
-- `detection_block`
-- `lowrank`
-- `threshold`
-- `alra_margin = lowrank - threshold`
-
-P1 stabilized-state recovery adds:
-
-- `n_observed_gene` / `n_donors`
-- `factor_rank`
-- `factor_fold`
-- `bias_calibration`
-- `shrinkage`
-- `prediction_sd`
-- `recovery_method` (`p1_stabilized_state`, `positive_membership_mean`, or `unavailable`)
-
-Tree-local comparison recovery additionally reports:
-
-- `local_positive_mean`
-- `local_positive_variance`
-- `local_positive_prevalence`
-- `effective_donors` (Kish size of the **positive baseline** donor weights)
-- `n_observed_gene` / `n_donors` (residual-model donor count available to the query)
-- `tree_distance_weighted_mean`
-- `embedding_distance_weighted_mean`
-- `factor_prediction`
-- `predictability`
-- `shrinkage`
-- `prediction_sd`
-- `recovery_method` (`tree_local_mean`, `tree_local_factor`, or `unavailable`)
-
-## Required recovery benchmark
-
-Recovery must be validated with the same oracle masks across component ablations:
-
-1. positive membership mean;
-2. embedding-only kernel mean;
-3. tree-only weighted mean;
-4. tree + embedding weighted mean;
-5. current `masked_factor`;
-6. local mean + residual factor;
-7. batched tree-local residual factor;
-8. `p1_stabilized_state`.
-
-Required scenarios include MCAR positive masking, original-UMI count strata, Binomial-zero, and full binomial thinning followed by re-normalization, PCA, SuperCell reconstruction, detection, and recovery.
-
-Report RMSE, MAE, bias, Pearson/CCC, interval coverage, gene-variance error, distributional distance, tree-distance strata, effective-donor strata, and biological-state strata. A post-recovery increase in correlation is not independent validation because coexpression participates in prediction.
-
-## Comparator engines
-
-Historical membership-local EB detector:
-
-```r
-fit_eb <- dropout_killer(
-  x = x,
-  embedding = pca,
-  group = major_cell_type,
-  detection_method = "eb_zero_null",
-  threshold = 0.95
-)
-```
-
-Historical membership-local ALRA-quantile detector:
-
-```r
-fit_local_alra <- dropout_killer(
-  x = x,
-  embedding = pca,
-  group = major_cell_type,
-  detection_method = "alra_quantile"
-)
-```
-
-Current masked-factor recovery comparator:
-
-```r
-fit_masked_factor <- dropout_killer(
-  x = x,
-  embedding = pca,
-  group = major_cell_type,
-  recovery_method = "masked_factor",
-  factor_target = "positive"
-)
-```
-
-Historical Gaussian neighbor recovery comparator:
-
-```r
-fit_neighbor <- dropout_killer(
-  x = x,
-  embedding = pca,
-  membership = membership,
-  recovery_method = "neighbor"
-)
-```
-
-The neighbor engine has no calibrated predictive-variance model, so `uncertainty_available = FALSE` and uncertainty-aware sampling rejects it.
-
 ## Seurat workflow
+
+Use the raw `counts` slot and provide a major-cell-type metadata field for the default scGACL detector:
 
 ```r
 obj <- dropout_killer_seurat(
@@ -422,6 +257,11 @@ obj <- dropout_killer_seurat(
 )
 ```
 
-With the default detector, `group_by` should identify the major cell class used for global ALRA zero detection. `split_by` remains a recovery boundary. Recovered values are continuous normalized-expression estimates and belong in assay data, not raw integer counts. Do not treat the completed mean matrix as an error-free count matrix for DE, trajectory, or network inference.
+A pre-normalized Seurat `data` slot is not a source-faithful input for the default scGACL detector. Use raw counts, or explicitly select another detector whose input contract matches the supplied matrix.
 
-See `inst/ALGORITHM.md` for the historical detector/v0.5 factor contract and `inst/TREE_LOCAL_RECOVERY.md` for the v0.6 hierarchy-aware comparison engine.
+## Method provenance
+
+- scGACL: Huang et al., *Briefings in Bioinformatics* (2026), released code: <https://github.com/Hhjyl/scGACL>.
+- ALRA: Linderman, Zhao & Kluger, *Nature Communications* 13, 192 (2022), released code: <https://github.com/KlugerLab/ALRA>.
+
+DropoutKiller ports the detector mathematics; it does not vendor scGACL's GAN/VAE imputation model. P1 remains the DropoutKiller recovery engine after a detector has selected technical-zero coordinates.
