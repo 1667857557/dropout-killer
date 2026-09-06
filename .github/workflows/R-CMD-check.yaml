@@ -25,3 +25,24 @@ jobs:
       - uses: r-lib/actions/check-r-package@v2
         with:
           error-on: '"warning"'
+      - name: Surface R CMD check diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          found=0
+          while IFS= read -r log; do
+            found=1
+            echo "::group::$log"
+            tail -n 160 "$log"
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              line=${line//$'\n'/'%0A'}
+              echo "::error title=R CMD check::$line"
+            done < <(tail -n 120 "$log")
+            echo "::endgroup::"
+          done < <(find . -type f \( -name '00check.log' -o -name 'testthat.Rout.fail' \) -print)
+          if [ "$found" -eq 0 ]; then
+            echo "::error title=R CMD check::check-r-package failed but no 00check.log/testthat.Rout.fail was found"
+          fi
