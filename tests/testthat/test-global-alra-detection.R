@@ -39,6 +39,54 @@ test_that("original ALRA automatic rank retains source K validity constraints", 
   )
 })
 
+test_that("original ALRA zero gate numerically matches released source calculation", {
+  set.seed(601)
+  raw <- matrix(rpois(40 * 60, lambda = 2), 40, 60)
+  raw[1, colSums(raw) == 0] <- 1
+  raw[sample(length(raw), 500)] <- 0
+  rownames(raw) <- paste0("g", seq_len(nrow(raw)))
+  colnames(raw) <- paste0("c", seq_len(ncol(raw)))
+  x <- DropoutKiller:::.dk_alra_library_log(raw)
+  A <- t(as.matrix(x))
+
+  # Directly reproduce KlugerLab/ALRA::alra() up to the adaptive zero gate.
+  # A is cells x genes, exactly the orientation expected by the original code.
+  seed <- 602L
+  set.seed(seed)
+  ref <- rsvd::rsvd(A, k = 3L, q = 2L)
+  lr <- ref$u[, 1:3, drop = FALSE] %*%
+    diag(ref$d[1:3], nrow = 3L) %*%
+    t(ref$v[, 1:3, drop = FALSE])
+  tau <- abs(apply(
+    lr, 2L, stats::quantile,
+    probs = 0.001, names = FALSE
+  ))
+  ref_pass <- (A == 0) & sweep(lr, 2L, tau, FUN = ">")
+
+  det <- DropoutKiller:::.dk_original_alra_detect(
+    x, rank = 3L, quantile_prob = 0.001,
+    seed = seed, svd_q = 2L
+  )
+  got <- matrix(FALSE, nrow(A), ncol(A))
+  if (nrow(det$events)) {
+    got[cbind(det$events$j, det$events$i)] <- TRUE
+  }
+
+  expect_equal(got, ref_pass)
+  if (nrow(det$events)) {
+    expect_equal(
+      det$events$threshold,
+      tau[det$events$i],
+      tolerance = 1e-12
+    )
+    expect_equal(
+      det$events$lowrank,
+      lr[cbind(det$events$j, det$events$i)],
+      tolerance = 1e-12
+    )
+  }
+})
+
 test_that("explicit high-level ALRA uses all cells and threshold is not a second gate", {
   set.seed(103)
   x <- matrix(rexp(24 * 12), 24, 12)
