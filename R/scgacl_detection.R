@@ -36,8 +36,9 @@
     } else {
       # scGACL's SciPy implementation solves
       # log(alpha) - digamma(alpha) = tp_v, initialized around alpha0.
-      # The left hand side is monotone on alpha > 0, so uniroot returns the
-      # same unique mathematical solution without introducing a new model.
+      # The equation has one positive root, so uniroot is mathematically
+      # equivalent to the released scipy.optimize.root call while avoiding a
+      # dependency on Python/SciPy inside the R package.
       f <- function(a) log(a) - digamma(a) - tp_v
       alpha <- tryCatch(
         stats::uniroot(f, interval = c(1e-10, 20), tol = 1e-12)$root,
@@ -60,7 +61,8 @@
 }
 
 .dk_scgacl_fit_gene <- function(xdata, point = .dk_scgacl_point()) {
-  # Direct port of Hhjyl/scGACL evaluation/dropout_identify.py::get_mix_internal.
+  # Direct mathematical port of
+  # Hhjyl/scGACL/evaluation/dropout_identify.py::get_mix_internal().
   # xdata is already log(1.01 + raw_count).
   rate <- sum(xdata == point) / length(xdata)
   if (rate > 0.95) {
@@ -87,7 +89,8 @@
   loglik_old <- 0
 
   # Official code stops when squared log10-likelihood change <= 0.5 or after
-  # iter > 100. isTRUE() reproduces Python's false comparison for NaN.
+  # iter > 100. isTRUE() also stops when the comparison becomes NA/NaN, matching
+  # Python's false while-condition for a NaN scalar.
   while (isTRUE(eps > 0.5)) {
     wt <- .dk_scgacl_weight(xdata, params)
     tp_sum <- c(sum(wt[[1L]]), sum(wt[[2L]]))
@@ -129,6 +132,8 @@
   gam <- rate * stats::dgamma(xdata, shape = alpha, rate = beta)
   nor <- (1 - rate) * stats::dnorm(xdata, mean = mu, sd = sigma)
   out <- gam / (gam + nor)
+  # Released cluster_get_dropout_rate() calls np.nan_to_num(..., nan=0)
+  # before returning the posterior matrix.
   out[!is.finite(out)] <- 0
   out
 }
@@ -147,7 +152,8 @@
 }
 
 .dk_scgacl_detect <- function(x, group, dropout_threshold = 0.5,
-                              point = .dk_scgacl_point()) {
+                              point = .dk_scgacl_point(),
+                              gene_batch_size = 256L) {
   x <- .dk_validate_expression(x)
   nm <- .dk_names(x)
   if (is.null(group)) {
@@ -170,6 +176,10 @@
   if (!is.numeric(point) || length(point) != 1L || !is.finite(point) || point <= 0) {
     stop("scGACL point must be a positive finite scalar", call. = FALSE)
   }
+  gene_batch_size <- as.integer(gene_batch_size)
+  if (length(gene_batch_size) != 1L || is.na(gene_batch_size) || gene_batch_size < 1L) {
+    stop("gene_batch_size must be a positive integer", call. = FALSE)
+  }
 
   lev <- unique(grp)
   events <- list()
@@ -179,78 +189,85 @@
   for (ii in seq_along(lev)) {
     label <- lev[ii]
     ids <- which(grp == label)
-
-    # Source-faithful preprocessing with bounded memory: the released scGACL
-    # code applies log(1.01 + raw_count) before fitting each subpopulation. Doing
-    # the same transform after extracting one subpopulation is algebraically
-    # identical, but avoids densifying the complete sparse gene-by-cell matrix.
-    block <- log(1.01 + as.matrix(x[, ids, drop = FALSE]))
-    n_genes <- nrow(block)
+    n_genes <- nrow(x)
     block_events <- 0L
     invalid_genes <- 0L
     fitted_genes <- 0L
-    zero_tests <- sum(block == point)
+    zero_tests <- 0L
 
-    # Official get_mix_parameters() marks genes invalid when the transformed
-    # mean lies within 1e-2 of point before attempting EM.
-    genes_expr <- abs(rowMeans(block) - point)
-    null_gene <- genes_expr < 1e-2
+    # The released Python implementation materializes one cell-subpopulation
+    # matrix and applies log(1.01 + raw_count). Here genes are processed in
+    # bounded batches. Every gene vector passed to EM is byte-for-byte the same
+    # mathematical vector; batching changes only memory use, not the model.
+    starts <- seq.int(1L, n_genes, by = gene_batch_size)
+    for (b0 in starts) {
+      gb <- b0:min(n_genes, b0 + gene_batch_size - 1L)
+      raw_block <- as.matrix(x[gb, ids, drop = FALSE])
+      block <- log(1.01 + raw_block)
+      zero_tests <- zero_tests + sum(block == point)
 
-    for (g in seq_len(n_genes)) {
-      if (null_gene[g]) {
-        invalid_genes <- invalid_genes + 1L
-        next
+      # Official get_mix_parameters() marks genes invalid when the transformed
+      # mean lies within 1e-2 of point before attempting EM.
+      genes_expr <- abs(rowMeans(block) - point)
+      null_gene <- genes_expr < 1e-2
+
+      for (gg in seq_along(gb)) {
+        g <- gb[gg]
+        if (null_gene[gg]) {
+          invalid_genes <- invalid_genes + 1L
+          next
+        }
+        xdata <- block[gg, ]
+        fit <- .dk_scgacl_fit_gene(xdata, point = point)
+        if (!identical(fit$status, "ok")) {
+          invalid_genes <- invalid_genes + 1L
+          next
+        }
+        fitted_genes <- fitted_genes + 1L
+        pars <- fit$params
+
+        # Only observed zeros can become DropoutKiller events. Under the scGACL
+        # transform every raw zero has exactly x=point. Thus one posterior
+        # evaluation per gene/subpopulation is algebraically identical to
+        # constructing the full dense posterior matrix and then selecting zeros.
+        zero_local <- which(xdata == point)
+        if (!length(zero_local)) next
+        d0 <- .dk_scgacl_dropout_probability(point, pars)
+
+        # The paper states d_ij > rho. The released main.py preserves generated
+        # values unless predict_drop < threshold, so equality is selected in the
+        # actual code. >= therefore reproduces the released implementation.
+        if (!is.finite(d0) || d0 < dropout_threshold) next
+
+        jj <- ids[zero_local]
+        nadd <- length(jj)
+        e <- e + 1L
+        block_events <- block_events + nadd
+        events[[e]] <- data.frame(
+          i = rep.int(g, nadd),
+          j = jj,
+          gene = rep.int(nm$genes[g], nadd),
+          cell = nm$cells[jj],
+          membership = rep.int(NA_integer_, nadd),
+          detection_block = rep.int(label, nadd),
+          lowrank = rep.int(NA_real_, nadd),
+          threshold = rep.int(dropout_threshold, nadd),
+          null_sigma = rep.int(NA_real_, nadd),
+          z_score = rep.int(NA_real_, nadd),
+          p_value = rep.int(NA_real_, nadd),
+          q_value = rep.int(NA_real_, nadd),
+          confidence = rep.int(d0, nadd),
+          confidence_fallback = rep.int(FALSE, nadd),
+          variance_weight = rep.int(NA_real_, nadd),
+          alra_margin = rep.int(NA_real_, nadd),
+          mixture_rate = rep.int(pars[1L], nadd),
+          gamma_shape = rep.int(pars[2L], nadd),
+          gamma_rate = rep.int(pars[3L], nadd),
+          normal_mean = rep.int(pars[4L], nadd),
+          normal_sd = rep.int(pars[5L], nadd),
+          stringsAsFactors = FALSE
+        )
       }
-      xdata <- block[g, ]
-      fit <- .dk_scgacl_fit_gene(xdata, point = point)
-      if (!identical(fit$status, "ok")) {
-        invalid_genes <- invalid_genes + 1L
-        next
-      }
-      fitted_genes <- fitted_genes + 1L
-      pars <- fit$params
-
-      # Only observed zeros can become DropoutKiller events. Under the scGACL
-      # transform every raw zero has exactly x=point, so one posterior evaluation
-      # per gene/subpopulation is algebraically identical to constructing the
-      # full probability matrix and then selecting zero entries.
-      zero_local <- which(xdata == point)
-      if (!length(zero_local)) next
-      d0 <- .dk_scgacl_dropout_probability(point, pars)
-
-      # The paper states d_ij > rho. The released scGACL main.py retains zeros
-      # unless predict_drop < threshold, so equality is selected in code. We use
-      # >= to reproduce the released implementation at the boundary.
-      if (!is.finite(d0) || d0 < dropout_threshold) next
-
-      jj <- ids[zero_local]
-      nadd <- length(jj)
-      e <- e + 1L
-      block_events <- block_events + nadd
-      events[[e]] <- data.frame(
-        i = rep.int(g, nadd),
-        j = jj,
-        gene = rep.int(nm$genes[g], nadd),
-        cell = nm$cells[jj],
-        membership = rep.int(NA_integer_, nadd),
-        detection_block = rep.int(label, nadd),
-        lowrank = rep.int(NA_real_, nadd),
-        threshold = rep.int(dropout_threshold, nadd),
-        null_sigma = rep.int(NA_real_, nadd),
-        z_score = rep.int(NA_real_, nadd),
-        p_value = rep.int(NA_real_, nadd),
-        q_value = rep.int(NA_real_, nadd),
-        confidence = rep.int(d0, nadd),
-        confidence_fallback = rep.int(FALSE, nadd),
-        variance_weight = rep.int(NA_real_, nadd),
-        alra_margin = rep.int(NA_real_, nadd),
-        mixture_rate = rep.int(pars[1L], nadd),
-        gamma_shape = rep.int(pars[2L], nadd),
-        gamma_rate = rep.int(pars[3L], nadd),
-        normal_mean = rep.int(pars[4L], nadd),
-        normal_sd = rep.int(pars[5L], nadd),
-        stringsAsFactors = FALSE
-      )
     }
 
     stats_out[[ii]] <- data.frame(
@@ -283,7 +300,8 @@
       dropout_threshold = dropout_threshold,
       point = point,
       transform = "log(1.01 + raw_count)",
-      subpopulation_source = "group"
+      subpopulation_source = "group",
+      gene_batch_size = gene_batch_size
     )
   )
   class(out) <- "DropoutKillerDetection"
