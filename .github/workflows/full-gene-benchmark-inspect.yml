@@ -1,6 +1,11 @@
 name: Full-gene PBMC benchmark source inspection
 
 on:
+  push:
+    branches:
+      - benchmark/full-gene-h-alra-20260907
+    paths:
+      - '.github/workflows/full-gene-benchmark-inspect.yml'
   workflow_dispatch:
 
 jobs:
@@ -27,7 +32,7 @@ jobs:
         shell: Rscript {0}
         run: |
           suppressPackageStartupMessages({library(Seurat); library(Signac); library(SeuratData)})
-          pbmc <- LoadData('pbmcMultiome', 'pbmc')
+          pbmc <- LoadData('pbmcMultiome', 'pbmc.rna')
           con <- file('inspection.txt', open='wt')
           sink(con); sink(con, type='message')
           cat('class=', paste(class(pbmc), collapse=','), '\n')
