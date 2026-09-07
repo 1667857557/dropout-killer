@@ -1,0 +1,56 @@
+name: Full-gene PBMC benchmark source inspection
+
+on:
+  push:
+    branches:
+      - benchmark/full-gene-h-alra-20260907
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::Seurat
+            any::Signac
+            any::remotes
+      - name: Install SeuratData and pbmcMultiome dataset
+        shell: Rscript {0}
+        run: |
+          remotes::install_github('satijalab/seurat-data', upgrade = 'never')
+          install.packages('https://seurat.nygenome.org/src/contrib/pbmcMultiome.SeuratData_0.1.4.tar.gz', repos = NULL, type = 'source')
+      - name: Inspect exact source object
+        shell: Rscript {0}
+        run: |
+          suppressPackageStartupMessages({library(Seurat); library(Signac); library(SeuratData)})
+          pbmc <- LoadData('pbmcMultiome', 'pbmc')
+          con <- file('inspection.txt', open='wt')
+          sink(con); sink(con, type='message')
+          cat('class=', paste(class(pbmc), collapse=','), '\n')
+          cat('object_dim=', paste(dim(pbmc), collapse='x'), '\n')
+          cat('assays=', paste(Assays(pbmc), collapse=','), '\n')
+          cat('RNA_counts_dim=', paste(dim(GetAssayData(pbmc, assay='RNA', slot='counts')), collapse='x'), '\n')
+          cat('reductions=', paste(Reductions(pbmc), collapse=','), '\n')
+          cat('meta_cols=', paste(colnames(pbmc[[]]), collapse=','), '\n')
+          cat('seurat_annotations table:\n'); print(table(pbmc$seurat_annotations, useNA='ifany'))
+          keep <- !is.na(pbmc$seurat_annotations) & pbmc$seurat_annotations != 'filtered'
+          cat('keep_not_filtered=', sum(keep), '\n')
+          pb <- subset(pbmc, cells=colnames(pbmc)[keep])
+          cat('subset_dim=', paste(dim(pb), collapse='x'), '\n')
+          cat('subset_RNA_counts_dim=', paste(dim(GetAssayData(pb, assay='RNA', slot='counts')), collapse='x'), '\n')
+          cat('subset_reductions=', paste(Reductions(pb), collapse=','), '\n')
+          if ('pca' %in% Reductions(pb)) cat('pca_dim=', paste(dim(Embeddings(pb,'pca')), collapse='x'), '\n')
+          cat('first_barcodes=', paste(head(colnames(pb)), collapse=','), '\n')
+          sink(type='message'); sink(); close(con)
+          cat(readLines('inspection.txt'), sep='\n')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-inspection
+          path: inspection.txt
