@@ -9,6 +9,41 @@ on:
   workflow_dispatch:
 
 jobs:
+  counts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal dependencies
+        run: python -m pip install --quiet numpy scipy h5py
+      - name: Download official Cell Ranger ARC 1.0.0 matrix
+        run: |
+          curl -L --fail --retry 4 -o pbmc_full.h5 \
+            https://cf.10xgenomics.com/samples/cell-arc/1.0.0/pbmc_granulocyte_sorted_10k/pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5
+      - name: Counts provenance checksum
+        run: |
+          python - <<'PY'
+          import json,h5py,numpy as np
+          from scipy import sparse
+          with h5py.File('pbmc_full.h5','r') as h:
+              g=h['matrix']; shape=tuple(map(int,g['shape'][...])); data=g['data'][...]; indices=g['indices'][...]; indptr=g['indptr'][...]
+              ft=np.array([x.decode() if isinstance(x,bytes) else str(x) for x in g['features']['feature_type'][...]])
+              bar=np.array([x.decode() if isinstance(x,bytes) else str(x) for x in g['barcodes'][...]])
+          M=sparse.csc_matrix((data,indices,indptr),shape=shape)
+          gi=np.flatnonzero(ft=='Gene Expression'); G=M[gi,:].tocsc(); lib=np.asarray(G.sum(axis=0)).ravel(); keep=lib>0; C=G[:,keep]
+          det=np.asarray((C>0).sum(axis=1)).ravel()/C.shape[1]; old=det>=0.05; Cold=C[old,:]; zero=1-Cold.nnz/(Cold.shape[0]*Cold.shape[1])
+          out={'raw_feature_shape':shape,'gene_expression_features':int(len(gi)),'raw_barcodes':int(G.shape[1]),'rna_nonzero_cells':int(C.shape[1]),'genes_detection_ge_5pct':int(old.sum()),'zero_fraction_detection_ge_5pct':float(zero),'all_gene_zero_fraction':float(1-C.nnz/(C.shape[0]*C.shape[1])),'first_cells':bar[keep][:6].tolist(),'pass_36601x10412':bool(C.shape==(36601,10412)),'pass_8793':bool(old.sum()==8793),'pass_old_zero':bool(abs(zero-0.78794472)<5e-4)}
+          out['all_pass']=all(out[k] for k in ['pass_36601x10412','pass_8793','pass_old_zero']); print(json.dumps(out,indent=2)); open('counts_provenance.json','w').write(json.dumps(out,indent=2))
+          if not out['all_pass']: raise SystemExit('COUNTS PROVENANCE FAILURE')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: counts-provenance
+          path: counts_provenance.json
+
   inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -21,7 +56,6 @@ jobs:
         with:
           packages: |
             any::Seurat
-            any::Signac
             any::remotes
       - name: Install SeuratData and pbmcMultiome dataset
         shell: Rscript {0}
@@ -31,27 +65,18 @@ jobs:
       - name: Inspect exact source object
         shell: Rscript {0}
         run: |
-          suppressPackageStartupMessages({library(Seurat); library(Signac); library(SeuratData)})
+          suppressPackageStartupMessages({library(Seurat); library(SeuratData)})
           pbmc <- LoadData('pbmcMultiome', 'pbmc.rna')
-          con <- file('inspection.txt', open='wt')
-          sink(con); sink(con, type='message')
-          cat('class=', paste(class(pbmc), collapse=','), '\n')
-          cat('object_dim=', paste(dim(pbmc), collapse='x'), '\n')
-          cat('assays=', paste(Assays(pbmc), collapse=','), '\n')
-          cat('RNA_counts_dim=', paste(dim(GetAssayData(pbmc, assay='RNA', slot='counts')), collapse='x'), '\n')
-          cat('reductions=', paste(Reductions(pbmc), collapse=','), '\n')
-          cat('meta_cols=', paste(colnames(pbmc[[]]), collapse=','), '\n')
-          cat('seurat_annotations table:\n'); print(table(pbmc$seurat_annotations, useNA='ifany'))
-          keep <- !is.na(pbmc$seurat_annotations) & pbmc$seurat_annotations != 'filtered'
-          cat('keep_not_filtered=', sum(keep), '\n')
-          pb <- subset(pbmc, cells=colnames(pbmc)[keep])
-          cat('subset_dim=', paste(dim(pb), collapse='x'), '\n')
-          cat('subset_RNA_counts_dim=', paste(dim(GetAssayData(pb, assay='RNA', slot='counts')), collapse='x'), '\n')
-          cat('subset_reductions=', paste(Reductions(pb), collapse=','), '\n')
-          if ('pca' %in% Reductions(pb)) cat('pca_dim=', paste(dim(Embeddings(pb,'pca')), collapse='x'), '\n')
-          cat('first_barcodes=', paste(head(colnames(pb)), collapse=','), '\n')
-          sink(type='message'); sink(); close(con)
-          cat(readLines('inspection.txt'), sep='\n')
+          con <- file('inspection.txt', open='wt'); sink(con); sink(con, type='message')
+          cat('class=',paste(class(pbmc),collapse=','),'\n'); cat('object_dim=',paste(dim(pbmc),collapse='x'),'\n'); cat('assays=',paste(Assays(pbmc),collapse=','),'\n')
+          cat('RNA_counts_dim=',paste(dim(GetAssayData(pbmc,assay='RNA',slot='counts')),collapse='x'),'\n'); cat('reductions=',paste(Reductions(pbmc),collapse=','),'\n'); cat('meta_cols=',paste(colnames(pbmc[[]]),collapse=','),'\n')
+          cat('seurat_annotations table:\n'); print(table(pbmc$seurat_annotations,useNA='ifany'))
+          keep <- !is.na(pbmc$seurat_annotations) & pbmc$seurat_annotations != 'filtered'; cat('keep_not_filtered=',sum(keep),'\n'); pb <- subset(pbmc,cells=colnames(pbmc)[keep])
+          cat('subset_dim=',paste(dim(pb),collapse='x'),'\n'); cat('subset_RNA_counts_dim=',paste(dim(GetAssayData(pb,assay='RNA',slot='counts')),collapse='x'),'\n'); cat('subset_reductions=',paste(Reductions(pb),collapse=','),'\n')
+          if ('pca' %in% Reductions(pb)) cat('pca_dim=',paste(dim(Embeddings(pb,'pca')),collapse='x'),'\n')
+          ann=as.character(pb$seurat_annotations); broad=rep(NA_character_,length(ann)); broad[ann %in% c('Intermediate B','Memory B','Naive B','Plasma')]='B_cell'; broad[ann %in% c('cDC','pDC')]='Dendritic_cell'; broad[ann=='HSPC']='HSPC'; broad[ann %in% c('CD14 Mono','CD16 Mono')]='Monocyte'; broad[ann=='NK']='NK_cell'; broad[ann %in% c('CD4 Naive','CD4 TCM','CD4 TEM','CD8 Naive','CD8 TEM_1','CD8 TEM_2','gdT','MAIT','Treg')]='T_cell'
+          cat('broad table:\n'); print(table(broad,useNA='ifany')); cat('first_barcodes=',paste(head(colnames(pb)),collapse=','),'\n')
+          sink(type='message'); sink(); close(con); cat(readLines('inspection.txt'),sep='\n')
       - uses: actions/upload-artifact@v4
         with:
           name: source-inspection
