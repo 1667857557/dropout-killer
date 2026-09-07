@@ -1,9 +1,6 @@
 name: Full-gene PBMC benchmark source inspection
 
 on:
-  push:
-    branches:
-      - benchmark/full-gene-h-alra-20260907
   workflow_dispatch:
 
 jobs:
