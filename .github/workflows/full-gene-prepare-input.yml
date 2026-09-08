@@ -1,0 +1,174 @@
+name: Full-gene PBMC canonical input
+
+on:
+  push:
+    branches:
+      - benchmark/full-gene-h-alra-20260907
+    paths:
+      - '.github/workflows/full-gene-prepare-input.yml'
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::Seurat
+            any::remotes
+            any::RANN
+            any::igraph
+            any::digest
+      - name: Install SeuratData and pbmcMultiome
+        shell: Rscript {0}
+        run: |
+          remotes::install_github('satijalab/seurat-data', upgrade = 'never')
+          install.packages(
+            'https://seurat.nygenome.org/src/contrib/pbmcMultiome.SeuratData_0.1.4.tar.gz',
+            repos = NULL, type = 'source'
+          )
+      - name: Reconstruct exact 10,412-cell benchmark state
+        shell: Rscript {0}
+        run: |
+          suppressPackageStartupMessages({
+            library(Seurat)
+            library(SeuratData)
+            library(digest)
+          })
+
+          expected_hash <- 'eaf5034f1025f566d0e160ccb4b44b9281cdf722189bb2f2f6ddcaab915d3f29'
+          expected_counts <- c(
+            B_cell = 884L,
+            Dendritic_cell = 304L,
+            HSPC = 26L,
+            Monocyte = 3326L,
+            NK_cell = 468L,
+            T_cell = 5404L
+          )
+
+          pbmc <- LoadData('pbmcMultiome', 'pbmc.rna')
+          meta <- pbmc[[]]
+          if (!'seurat_annotations' %in% colnames(meta)) {
+            stop('seurat_annotations missing from pbmcMultiome object')
+          }
+          ann <- as.character(meta$seurat_annotations)
+          broad <- rep(NA_character_, length(ann))
+          broad[ann %in% c('Intermediate B','Memory B','Naive B','Plasma')] <- 'B_cell'
+          broad[ann %in% c('cDC','pDC')] <- 'Dendritic_cell'
+          broad[ann == 'HSPC'] <- 'HSPC'
+          broad[ann %in% c('CD14 Mono','CD16 Mono')] <- 'Monocyte'
+          broad[ann == 'NK'] <- 'NK_cell'
+          broad[ann %in% c('CD4 Naive','CD4 TCM','CD4 TEM','CD8 Naive','CD8 TEM_1','CD8 TEM_2','gdT','MAIT','Treg')] <- 'T_cell'
+
+          keep <- !is.na(meta$seurat_annotations) & meta$seurat_annotations != 'filtered'
+          if (sum(keep) != 10412L) {
+            stop(sprintf('expected 10412 non-filtered cells, got %d', sum(keep)))
+          }
+          if (anyNA(broad[keep])) {
+            bad <- unique(ann[keep & is.na(broad)])
+            stop(sprintf('unmapped non-filtered annotations: %s', paste(bad, collapse=',')))
+          }
+
+          cells <- sort(rownames(meta)[keep])
+          labels <- broad[match(cells, rownames(meta))]
+          names(labels) <- cells
+          observed_counts <- table(factor(labels, levels=names(expected_counts)))
+          if (!identical(as.integer(observed_counts), as.integer(expected_counts))) {
+            stop(sprintf(
+              'broad-label counts mismatch: observed=%s expected=%s',
+              paste(as.integer(observed_counts), collapse=','),
+              paste(as.integer(expected_counts), collapse=',')
+            ))
+          }
+
+          canonical <- paste0(cells, '\t', labels, '\n', collapse='')
+          manifest_hash <- digest(charToRaw(canonical), algo='sha256', serialize=FALSE)
+          if (!identical(manifest_hash, expected_hash)) {
+            stop(sprintf('historical manifest hash mismatch: observed=%s expected=%s', manifest_hash, expected_hash))
+          }
+
+          if (!'pca' %in% Reductions(pbmc)) stop('pca reduction missing from pbmcMultiome object')
+          pca <- Embeddings(pbmc, 'pca')
+          if (ncol(pca) < 20L) stop('pbmcMultiome PCA has fewer than 20 dimensions')
+          if (!all(cells %in% rownames(pca))) stop('historical cells missing from public PCA embedding')
+          embedding <- pca[cells, seq_len(20L), drop=FALSE]
+
+          # Exact membership implementation used by the historical benchmark.
+          source('R/utils.R')
+          source('R/membership.R')
+          fit <- build_supercell_membership(
+            embedding = embedding,
+            group = labels,
+            gamma = 150,
+            k_knn = 5L,
+            method = 'walktrap',
+            approximate = FALSE,
+            seed = 12345L,
+            return_graph = FALSE
+          )
+          membership <- fit$membership[cells]
+          if (length(unique(membership)) != 70L) {
+            stop(sprintf('expected 70 memberships, got %d', length(unique(membership))))
+          }
+
+          dir.create('benchmark_input', showWarnings=FALSE)
+          write.csv(
+            data.frame(cell=cells, cell_type=unname(labels), stringsAsFactors=FALSE),
+            'benchmark_input/metadata.csv', row.names=FALSE, quote=FALSE
+          )
+          write.csv(
+            embedding,
+            'benchmark_input/embedding20.csv', row.names=TRUE, quote=FALSE
+          )
+          write.csv(
+            data.frame(cell=cells, membership=as.integer(membership), stringsAsFactors=FALSE),
+            'benchmark_input/membership.csv', row.names=FALSE, quote=FALSE
+          )
+
+          geometry_hash <- digest(
+            charToRaw(paste(formatC(as.numeric(embedding), digits=17, format='fg'), collapse='\n')),
+            algo='sha256', serialize=FALSE
+          )
+          membership_hash <- digest(
+            charToRaw(paste0(cells, '\t', as.integer(membership), '\n', collapse='')),
+            algo='sha256', serialize=FALSE
+          )
+          prov <- list(
+            source = 'satijalab/pbmcMultiome.SeuratData 0.1.4, pbmc.rna',
+            geometry_status = 'public_reconstructed',
+            historical_manifest_sha256 = expected_hash,
+            reconstructed_manifest_sha256 = manifest_hash,
+            geometry_sha256 = geometry_hash,
+            membership_sha256 = membership_hash,
+            n_cells = length(cells),
+            pca_dims = 20L,
+            membership_n = length(unique(membership)),
+            membership_settings = list(gamma=150, k_knn=5L, method='walktrap', approximate=FALSE, seed=12345L),
+            cell_type_counts = as.list(setNames(as.integer(observed_counts), names(expected_counts)))
+          )
+          dput(prov, file='benchmark_input/provenance.dput')
+          writeLines(c(
+            sprintf('manifest_sha256=%s', manifest_hash),
+            sprintf('geometry_sha256=%s', geometry_hash),
+            sprintf('membership_sha256=%s', membership_hash),
+            sprintf('n_cells=%d', length(cells)),
+            sprintf('n_memberships=%d', length(unique(membership)))
+          ), 'benchmark_input/provenance.txt')
+          print(prov)
+      - name: Inspect generated input
+        run: |
+          wc -l benchmark_input/*.csv
+          cat benchmark_input/provenance.txt
+          head -3 benchmark_input/metadata.csv
+          head -3 benchmark_input/membership.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canonical-pbmc-benchmark-input
+          path: benchmark_input/
+          retention-days: 14
