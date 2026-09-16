@@ -1,3 +1,12 @@
+normalization_lean_model <- function() {
+  set.seed(1201)
+  f <- data.frame(z = rnorm(400), local_hierarchy = rnorm(400), H = rnorm(400))
+  truth <- runif(400) < plogis(f$z + 0.4 * f$local_hierarchy + 0.2 * f$H)
+  m <- fit_lean_detector(f, truth)
+  m$threshold <- 1e10
+  m
+}
+
 test_that("ALRA library+log normalization matches the reference formula", {
   x <- matrix(c(1, 3, 0, 2, 4, 0, 5, 5, 10, 0, 0, 10), nrow = 3)
   rownames(x) <- paste0("g", 1:3); colnames(x) <- paste0("c", 1:4)
@@ -43,8 +52,8 @@ test_that("high-level workflow normalizes once and validates against raw input",
   z <- matrix(c(0, 0, 1, 0, 0, 1, 1, 1), nrow = 4,
               dimnames = list(colnames(x), c("PC1", "PC2")))
   expected <- DropoutKiller:::.dk_alra_library_log(x)
-  fit <- dropout_killer(detection_method = "alra_global_by_group", 
-    x, z, membership = rep(1, 4), min_cells = 10,
+  fit <- dropout_killer(
+    x, z, lean_model = normalization_lean_model(), rank = 2,
     normalize = TRUE, normalization_scale_factor = 1e4
   )
   expect_equal(as.matrix(fit$expression), as.matrix(expected), tolerance = 1e-12)
@@ -59,7 +68,10 @@ test_that("normalize FALSE preserves the supplied working scale", {
   rownames(x) <- paste0("g", 1:3); colnames(x) <- paste0("c", 1:4)
   z <- matrix(seq_len(8), nrow = 4,
               dimnames = list(colnames(x), c("PC1", "PC2")))
-  fit <- dropout_killer(detection_method = "alra_global_by_group", x, z, membership = rep(1, 4), min_cells = 10, normalize = FALSE)
+  fit <- dropout_killer(
+    x, z, lean_model = normalization_lean_model(), rank = 2,
+    normalize = FALSE
+  )
   expect_equal(as.matrix(fit$expression), x)
   expect_equal(fit$settings$normalization, "none")
 })
