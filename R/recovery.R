@@ -254,12 +254,12 @@ recover_dropout_expression <- function(x, mask, membership, embedding = NULL,
 #' Run selective dropout detection and recovery
 #'
 #' Raw counts are ALRA library-size normalized to 10,000 counts per cell and
-#' `log1p` transformed by default. The production zero detector now applies the
-#' original ALRA randomized low-rank strategy globally within each supplied
-#' `group` (major cell class), followed by the per-gene absolute 0.1% low-rank
-#' quantile gate. `split_by` and final SuperCell memberships do not fragment this
-#' detection block; they remain biological boundaries for recovery. If `group`
-#' is `NULL`, all cells form one global ALRA detection block.
+#' `log1p` transformed by default. Lean hierarchy detection combines standardized
+#' ALRA evidence, membership-first hierarchy neighbor support and shrunk membership
+#' context with a calibrated balanced logistic model. Broad `group` labels are hard
+#' boundaries. Paired RNA/ATAC inputs use the WNN geometry built by the Seurat wrapper.
+#' Automatic calibration requires raw counts and valid broad-class proxy negatives;
+#' a previously fitted model may instead be supplied with `lean_model`.
 #'
 #' The production recovery engine is `p1_stabilized_state`: deterministic
 #' target-gene folds are removed from predictor construction, the target-safe
@@ -285,7 +285,8 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            factor_rank = 5L, factor_features = 2000L,
                            factor_ridge = 2, min_feature_observed = 20L,
                            min_target_observed = 8L,
-                           detection_method = c("alra_global_by_group", "eb_zero_null", "alra_quantile"),
+                           detection_method = c("Supercell_hierarchy_Lean_membership", "Supercell_hierarchy_Lean_membership_WNN",
+                                                "alra_global_by_group", "eb_zero_null", "alra_quantile"),
                            variance_prior_df = 10,
                            factor_target = c("positive", "all_observed"),
                            tree_weight = 0.5, tree_tau = NULL,
@@ -299,8 +300,12 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
                            factor_crossfit_seed = 1L,
                            support_adaptive_rank = TRUE,
                            bias_kappa = 10,
-                           predictor_smoothing = 0.25) {
+                           predictor_smoothing = 0.25,
+                           lean_model = NULL, lean_control = list(), lean_geometry = NULL) {
   x <- .dk_validate_expression(x); nm <- .dk_names(x)
+  raw_counts <- x
+  dimnames(raw_counts) <- list(nm$genes, nm$cells)
+  dimnames(x) <- dimnames(raw_counts)
   if (!is.logical(normalize) || length(normalize) != 1L || is.na(normalize)) stop("normalize must be TRUE or FALSE", call. = FALSE)
   if (!is.numeric(normalization_scale_factor) || length(normalization_scale_factor) != 1L ||
       !is.finite(normalization_scale_factor) || normalization_scale_factor <= 0)
@@ -313,6 +318,24 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
   group <- .dk_align_vector(group, nm$cells, "group")
   split_by <- .dk_align_vector(split_by, nm$cells, "split_by")
   hard_recovery_stratum <- if (!is.null(group) || !is.null(split_by)) .dk_stratum(group, split_by, ncol(x)) else NULL
+  is_lean <- detection_method %in% c(.dk_lean_method(), .dk_lean_method(TRUE))
+  if (is_lean) {
+    if (!is.null(membership)) stop("Lean detection builds its own retained hierarchy; use lean_geometry, not membership labels", call. = FALSE)
+    if (!is.null(split_by)) stop("Lean hierarchy uses broad group boundaries only; split_by is not supported for this detector", call. = FALSE)
+    if (normalization_scale_factor != 1e4) stop("Lean features require normalization_scale_factor=10000", call. = FALSE)
+    if (quantile_prob != .001 || rank_z != 6) stop("Lean benchmark features require quantile_prob=0.001 and rank_z=6",call.=FALSE)
+    if (is.null(lean_geometry)) {
+      if (identical(detection_method, .dk_lean_method(TRUE))) stop("WNN detection requires build_wnn_supercell geometry or the Seurat wrapper", call. = FALSE)
+      lean_geometry <- .dk_lean_rna_geometry(z, group, gamma, k_knn)
+    }
+    if (is.null(lean_model)) {
+      if (!normalize) stop("automatic Lean calibration requires raw counts with normalize=TRUE; otherwise supply lean_model", call. = FALSE)
+      if (!is.null(lean_geometry$affinity)) stop("WNN calibration must rebuild geometry per mask; use the Seurat wrapper or supply lean_model", call. = FALSE)
+      lean_model <- do.call(calibrate_lean_detector, c(list(counts=raw_counts,group=group,
+        gamma=gamma,k_knn=k_knn,neighbor_k=neighbor_k,rank=rank),lean_control))
+    }
+    membership <- lean_geometry$membership_fit
+  }
   membership_fit <- NULL
   if (inherits(membership, "DropoutKillerMembership")) {
     membership_fit <- membership; membership <- membership_fit$membership
@@ -330,7 +353,21 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     membership_fit$membership_table$membership <- as.integer(as.character(membership_fit$membership_table$membership))
   } else membership <- .dk_align_membership(membership, nm$cells)
 
-  if (detection_method == "alra_global_by_group") {
+  if (is_lean) {
+    membership_fit$membership <- stats::setNames(membership,nm$cells)
+    tab <- as.data.frame(table(membership),stringsAsFactors=FALSE)
+    names(tab) <- c('membership','n_cells');tab$membership<-as.integer(as.character(tab$membership))
+    membership_fit$membership_table <- tab
+    lean_geometry$membership_fit <- membership_fit
+    hard_recovery_stratum <- membership_fit$cell_stratum[nm$cells]
+  }
+
+  if (is_lean) {
+    det <- supercell_lean_detect(x, z, group, model=lean_model, geometry=lean_geometry,
+      normalize=FALSE,gamma=gamma,k_knn=k_knn,neighbor_k=neighbor_k,rank=rank,seed=seed)
+    if (!identical(det$settings$detection_method,detection_method)) stop("requested detector and geometry modality differ",call.=FALSE)
+    mask <- .dk_sparse_logical(det$events$i,det$events$j,nrow(x),ncol(x),dimnames(x))
+  } else if (detection_method == "alra_global_by_group") {
     det <- .dk_global_alra_detect(
       x, group = group, rank = rank, quantile_prob = quantile_prob,
       min_cells = min_cells, seed = seed, K = alra_K, rank_z = rank_z,
@@ -453,14 +490,14 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     predictive_variance = predictive_variance,
     uncertainty_available = uncertainty_available, detection = det,
     settings = list(
-      gamma = gamma, k_knn = k_knn, approximate = approximate, approx_n = approx_n,
+      gamma = gamma, k_knn = k_knn, approximate = if(is_lean) FALSE else approximate, approx_n = approx_n,
       rank = rank, max_rank = max_rank, rank_z = rank_z,
       quantile_prob = quantile_prob, threshold = threshold,
       min_cells = min_cells, min_negative = min_negative,
       detection_method = detection_method,
       detection_scope = if (detection_method == "alra_global_by_group") {
         if (is.null(group)) "all_cells" else "group"
-      } else "membership",
+      } else if (is_lean) "hierarchy_within_broad_group" else "membership",
       variance_prior_df = variance_prior_df,
       alra_K = as.integer(alra_K), alra_noise_start = as.integer(alra_noise_start),
       alra_choose_q = as.integer(alra_choose_q), alra_svd_q = as.integer(alra_svd_q),
@@ -496,7 +533,7 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     attr(out$score, "zero_only") <- TRUE
     attr(out$score, "detection") <- det
     attr(out$score, "score_type") <- if (detection_method == "alra_global_by_group")
-      "binary_native_alra_call" else "confidence"
+      "binary_native_alra_call" else if (is_lean) "balanced_logistic_score_called_events" else "confidence"
   }
   class(out) <- "DropoutKillerResult"
   out

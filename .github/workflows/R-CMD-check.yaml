@@ -22,6 +22,8 @@ jobs:
           extra-packages: |
             any::rcmdcheck
             any::testthat
+            any::Seurat
+            any::Signac
       - uses: r-lib/actions/check-r-package@v2
         with:
           error-on: '"warning"'
