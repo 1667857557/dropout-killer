@@ -20,3 +20,8 @@ export(weighted_neighbor_prediction)
 S3method(print,DropoutKillerDetection)
 S3method(print,DropoutKillerMembership)
 S3method(print,DropoutKillerResult)
+
+export(fit_lean_detector)
+export(calibrate_lean_detector)
+export(supercell_lean_detect)
+export(build_wnn_supercell)

@@ -43,7 +43,7 @@ test_that("high-level workflow normalizes once and validates against raw input",
   z <- matrix(c(0, 0, 1, 0, 0, 1, 1, 1), nrow = 4,
               dimnames = list(colnames(x), c("PC1", "PC2")))
   expected <- DropoutKiller:::.dk_alra_library_log(x)
-  fit <- dropout_killer(
+  fit <- dropout_killer(detection_method = "alra_global_by_group", 
     x, z, membership = rep(1, 4), min_cells = 10,
     normalize = TRUE, normalization_scale_factor = 1e4
   )
@@ -59,7 +59,7 @@ test_that("normalize FALSE preserves the supplied working scale", {
   rownames(x) <- paste0("g", 1:3); colnames(x) <- paste0("c", 1:4)
   z <- matrix(seq_len(8), nrow = 4,
               dimnames = list(colnames(x), c("PC1", "PC2")))
-  fit <- dropout_killer(x, z, membership = rep(1, 4), min_cells = 10, normalize = FALSE)
+  fit <- dropout_killer(detection_method = "alra_global_by_group", x, z, membership = rep(1, 4), min_cells = 10, normalize = FALSE)
   expect_equal(as.matrix(fit$expression), x)
   expect_equal(fit$settings$normalization, "none")
 })

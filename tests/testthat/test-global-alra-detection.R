@@ -34,7 +34,7 @@ test_that("global ALRA auto rank adapts K to small cell classes", {
   expect_true(det$membership_stats$rank <= 7L)
 })
 
-test_that("high-level default is group-global ALRA and threshold is not a second gate", {
+test_that("explicit legacy route is group-global ALRA and threshold is not a second gate", {
   set.seed(103)
   x <- matrix(rexp(24 * 12), 24, 12)
   x[x < 0.8] <- 0
@@ -44,13 +44,13 @@ test_that("high-level default is group-global ALRA and threshold is not a second
               dimnames = list(colnames(x), paste0("PC", 1:3)))
   group <- rep(c("class1", "class2"), each = 6)
   membership <- rep(seq_len(4), each = 3)
-  fit1 <- dropout_killer(
+  fit1 <- dropout_killer(detection_method = "alra_global_by_group", 
     x, z, membership = membership, group = group,
     rank = 2, min_cells = 4, threshold = 0.1, seed = 103,
     factor_rank = 2, factor_features = 10,
     min_feature_observed = 4, min_target_observed = 4
   )
-  fit2 <- dropout_killer(
+  fit2 <- dropout_killer(detection_method = "alra_global_by_group", 
     x, z, membership = membership, group = group,
     rank = 2, min_cells = 4, threshold = 0.999, seed = 103,
     factor_rank = 2, factor_features = 10,

@@ -1,3 +1,13 @@
+# DropoutKiller 0.8.0
+
+- Default to calibrated Supercell_hierarchy_Lean_membership detection.
+- Automatically rebuild PCA + LSI2+ WNN for paired RNA/ATAC Seurat inputs.
+- Follow actual SuperCell 2.0 affinity kernel, Walktrap history and floor cut.
+- Borrow within broad classes only after own-membership support is insufficient.
+- Add explicit reusable model fitting and all-event thinning calibration APIs.
+- Retain old detectors by explicit selection and unchanged P1 recovery defaults.
+- Old local WNN benchmark scores are not validation of the corrected implementation.
+
 # DropoutKiller 0.7.0
 
 - Promoted `recovery_method = "p1_stabilized_state"` to the high-level production default after the full-cell PBMC artificial-dropout benchmark.
