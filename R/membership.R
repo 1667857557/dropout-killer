@@ -179,35 +179,6 @@ build_supercell_membership <- function(embedding, group = NULL, split_by = NULL,
   out
 }
 
-#' SuperCell-style membership convenience wrapper
-#'
-#' @export
-dropout_membership <- function(object = NULL, embedding = NULL, reduction = "pca", dims = 1:10,
-                               group = NULL, group_by = NULL, split_by = NULL, split_by_col = NULL,
-                               return_object = FALSE, ...) {
-  if (!is.null(object) && inherits(object, "Seurat")) {
-    if (!requireNamespace("Seurat", quietly = TRUE)) stop("Seurat is required for a Seurat object", call. = FALSE)
-    embedding <- Seurat::Embeddings(object, reduction = reduction)
-    if (!is.null(dims)) {
-      dims <- as.integer(dims); dims <- dims[is.finite(dims) & dims >= 1L & dims <= ncol(embedding)]
-      if (!length(dims)) stop("no requested embedding dimensions are available", call. = FALSE)
-      embedding <- embedding[, dims, drop = FALSE]
-    }
-    meta <- object[[]]
-    if (!is.null(group_by)) {
-      if (!group_by %in% colnames(meta)) stop("group_by column not found in Seurat metadata", call. = FALSE)
-      group <- meta[[group_by]]; names(group) <- rownames(meta)
-    }
-    if (!is.null(split_by_col)) {
-      if (!split_by_col %in% colnames(meta)) stop("split_by_col column not found in Seurat metadata", call. = FALSE)
-      split_by <- meta[[split_by_col]]; names(split_by) <- rownames(meta)
-    }
-  } else if (is.null(embedding) && !is.null(object)) embedding <- object
-  if (is.null(embedding)) stop("provide embedding or a Seurat object", call. = FALSE)
-  fit <- build_supercell_membership(embedding = embedding, group = group, split_by = split_by, ...)
-  if (return_object) fit else fit$membership
-}
-
 #' @export
 print.DropoutKillerMembership <- function(x, ...) {
   cat("DropoutKiller membership\n")
