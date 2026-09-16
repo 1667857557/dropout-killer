@@ -21,11 +21,11 @@ dropout_killer_seurat <- function(object, assay = NULL, slot = "counts", reducti
   if (!inherits(object, "Seurat")) stop("object must be a Seurat object", call. = FALSE)
   modality <- match.arg(modality)
   dots <- list(...)
-  selected_atac <- .dk_atac_assay(object, atac_assay)
-  use_wnn <- modality == "wnn" || (modality == "auto" && !is.null(selected_atac))
+  is_lean <- is.null(dots$detection_method) || dots$detection_method %in% c(.dk_lean_method(),.dk_lean_method(TRUE))
+  selected_atac <- if (is_lean && modality != 'rna') .dk_atac_assay(object, atac_assay) else NULL
+  use_wnn <- is_lean && (modality == "wnn" || (modality == "auto" && !is.null(selected_atac)))
   if (is.null(assay)) assay <- if ("RNA" %in% names(object@assays)) "RNA" else SeuratObject::DefaultAssay(object)
   if (use_wnn && identical(assay,selected_atac)) stop("select the RNA assay for dropout detection",call.=FALSE)
-  is_lean <- is.null(dots$detection_method) || dots$detection_method %in% c(.dk_lean_method(),.dk_lean_method(TRUE))
   if (is_lean) {
     if (!is.null(dots$detection_method) && !identical(dots$detection_method,.dk_lean_method(use_wnn)))
       stop('explicit detector conflicts with input modality; set modality explicitly',call.=FALSE)

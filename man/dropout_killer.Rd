@@ -88,7 +88,7 @@ run_dropout_killer(x, embedding, membership = NULL, group = NULL,
 \item{lean_control}{Named calibration arguments, e.g. q, seeds, fpr and negative_max.}
 \item{lean_geometry}{Internal geometry from \code{build_wnn_supercell}, or NULL for RNA.}
 \item{x}{Non-negative gene-by-cell raw count/expression matrix. By default it is internally library-size normalized and log transformed using the ALRA convention. Set \code{normalize=FALSE} only when supplying an already normalized working matrix.}
-\item{embedding}{Cell-by-dimension biological representation used for membership construction and local recovery geometry.}
+\item{embedding}{Cell-by-dimension recovery representation. Default Lean RNA detection independently rebuilds its geometry from normalized RNA SVD, matching calibration even when this embedding changes. Historical detectors may also use this embedding for membership construction.}
 \item{membership}{Optional membership vector or \code{DropoutKillerMembership}. For historical detectors only; the Lean default constructs its own full hierarchy.}
 \item{group}{Optional major cell-class vector. Defines hard broad-class boundaries for Lean hierarchy. Automatic calibration requires at least two groups; with a supplied model NULL treats all cells as one group.}
 \item{split_by}{Optional additional hard recovery boundary such as condition or donor. Not supported by the Lean default; use broad group boundaries only.}

@@ -21,8 +21,12 @@ out2 <- dropout_killer_seurat(object, group_by = "broad_type",
 ```
 
 For RNA matrices, supply raw counts, a cell-by-dimension RNA embedding and broad
-groups to `dropout_killer(counts, embedding, group = broad_group)`. In the Seurat
-RNA route, the embedding is rebuilt from the normalized RNA SVD. Fine cell labels
+groups to `dropout_killer(counts, embedding, group = broad_group)`. The supplied
+embedding controls recovery; the default RNA detector always rebuilds its geometry
+from the normalized RNA SVD, matching the thinning calibration pipeline. This also
+applies when reusing a calibrated model. Explicit custom `lean_geometry` requires
+an externally fitted model calibrated with that same geometry builder. In the Seurat
+RNA route, the recovery embedding is also rebuilt from RNA SVD. Fine cell labels
 are never selected automatically. `group_by`/`group` must be explicitly chosen;
 with a supplied calibration model, omitting groups treats all cells as one group.
 The package cannot infer which annotation represents a broad biological lineage.
@@ -57,7 +61,8 @@ events and optional sparse scores cover called zeros, not every uncalled zero.
 
 The Seurat wrapper detects an unambiguous ChromatinAssay or assay named ATAC/peaks.
 Specify `atac_assay` if multiple ATAC assays exist. RNA+ADT is not automatically
-treated as RNA+ATAC. `modality="rna"` explicitly opts out of WNN.
+treated as RNA+ATAC. `modality="rna"` explicitly opts out of WNN. RNA-only and
+explicit historical routes do not inspect or validate unused ATAC assays.
 
 Every WNN build recomputes RNA NormalizeData/variable features/ScaleData/PCA and
 ATAC TF-IDF/top features/LSI. It uses PCA 1:40 and LSI 2:40, reduced to available

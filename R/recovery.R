@@ -324,9 +324,14 @@ dropout_killer <- function(x, embedding, membership = NULL, group = NULL, split_
     if (!is.null(split_by)) stop("Lean hierarchy uses broad group boundaries only; split_by is not supported for this detector", call. = FALSE)
     if (normalization_scale_factor != 1e4) stop("Lean features require normalization_scale_factor=10000", call. = FALSE)
     if (quantile_prob != .001 || rank_z != 6) stop("Lean benchmark features require quantile_prob=0.001 and rank_z=6",call.=FALSE)
+    if (is.null(lean_model) && (!is.null(lean_geometry) || !is.null(lean_control$geometry_builder)))
+      stop('custom geometry requires a fitted lean_model; calibrate its matching builder explicitly',call.=FALSE)
     if (is.null(lean_geometry)) {
       if (identical(detection_method, .dk_lean_method(TRUE))) stop("WNN detection requires build_wnn_supercell geometry or the Seurat wrapper", call. = FALSE)
-      lean_geometry <- .dk_lean_rna_geometry(z, group, gamma, k_knn)
+      # The supplied embedding remains recovery geometry only. Both automatic
+      # calibration and inference must generate detector features from RNA SVD.
+      detection_embedding <- .dk_lean_svd(x,rank,seed)$embedding
+      lean_geometry <- .dk_lean_rna_geometry(detection_embedding, group, gamma, k_knn)
     }
     if (is.null(lean_model)) {
       if (!normalize) stop("automatic Lean calibration requires raw counts with normalize=TRUE; otherwise supply lean_model", call. = FALSE)
