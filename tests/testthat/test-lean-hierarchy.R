@@ -84,7 +84,7 @@ test_that('new default calls only zeros and leaves observed recovery values unch
   m$threshold<-1e10
   res<-dropout_killer(d$x,d$z,group=d$group,lean_model=m,gamma=4,rank=3,recovery_method='neighbor')
   expect_equal(nrow(res$events),0)
-  expect_error(dropout_killer(d$x,d$z,group=d$group,membership=rep(1,24),lean_model=m),'retained hierarchy')
+  expect_error(dropout_killer(d$x,d$z,group=d$group,membership=rep(1,24),lean_model=m),'unused argument')
   m$threshold<--100
   p1<-dropout_killer(d$x,d$z,group=d$group,lean_model=m,gamma=4,k_knn=4,rank=3,
                      factor_features=12,min_feature_observed=2,min_target_observed=2,
