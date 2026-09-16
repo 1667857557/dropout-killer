@@ -83,7 +83,7 @@ test_that("count power posterior has required limiting behavior", {
                     more_count$variance >= 0))
 })
 
-test_that("architecture prediction is event-only and numerically valid", {
+test_that("internal architecture prediction is event-only and numerically valid", {
   skip_if_not_installed("Matrix")
   set.seed(15)
   counts <- matrix(rpois(24 * 48, 2), 24, 48)
@@ -101,7 +101,7 @@ test_that("architecture prediction is event-only and numerically valid", {
   x <- DropoutKiller:::.dk_alra_library_log(sparse_counts)
   mask <- Matrix::sparseMatrix(i = take[, 1], j = take[, 2], x = TRUE,
                                dims = dim(x), dimnames = dimnames(x)) > 0
-  ans <- recovery_architecture_prediction(
+  ans <- DropoutKiller:::recovery_architecture_prediction(
     x, sparse_counts, membership, embedding, mask,
     hard_stratum = label, factor_crossfit_folds = 3,
     min_feature_observed = 3, min_target_observed = 3
@@ -114,7 +114,7 @@ test_that("architecture prediction is event-only and numerically valid", {
   expect_true(!any(ok) || min(ans$simplex$min_weight[ok]) >= -1e-10)
 })
 
-test_that("production P1 stabilized dispatcher matches the audited architecture", {
+test_that("production P1 stabilized dispatcher matches the audited internal architecture", {
   skip_if_not_installed("Matrix")
   set.seed(151)
   counts <- matrix(rpois(30 * 54, 2), 30, 54)
@@ -138,7 +138,7 @@ test_that("production P1 stabilized dispatcher matches the audited architecture"
     dims = dim(x), dimnames = dimnames(x)
   ) > 0
 
-  expert <- recovery_architecture_prediction(
+  expert <- DropoutKiller:::recovery_architecture_prediction(
     x, sparse_counts, membership, embedding, mask,
     hard_stratum = label, methods = "p1_stabilized_state",
     factor_rank = 3, factor_features = 20, factor_ridge = 2,
