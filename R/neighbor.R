@@ -48,24 +48,3 @@
   }
   list(prediction = pred, n_donors = donors, bandwidth = bandwidth)
 }
-
-#' Membership-constrained Gaussian neighbor borrowing
-#'
-#' @export
-weighted_neighbor_prediction <- function(x, embedding, membership, mask, k = 30L, sigma = NULL,
-                                         min_positive_neighbors = 1L, positive_only = TRUE,
-                                         return_events = FALSE) {
-  x <- .dk_validate_expression(x); nm <- .dk_names(x)
-  z <- .dk_align_embedding(embedding, nm$cells)
-  membership <- .dk_align_membership(membership, nm$cells)
-  if (length(dim(mask)) != 2L || !identical(as.integer(dim(mask)), as.integer(dim(x)))) stop("mask and x dimensions differ", call. = FALSE)
-  events <- .dk_mask_events(mask)
-  if (nrow(events)) events$membership <- membership[events$j] else events$membership <- integer()
-  fit <- .dk_cell_predict_events(x, z, membership, events, k, sigma, min_positive_neighbors, positive_only)
-  if (return_events) {
-    events$prediction <- fit$prediction; events$n_donors <- fit$n_donors; events$bandwidth <- fit$bandwidth
-    return(events)
-  }
-  ok <- is.finite(fit$prediction)
-  .dk_sparse_numeric(events$i[ok], events$j[ok], fit$prediction[ok], nrow(x), ncol(x), list(nm$genes, nm$cells))
-}
