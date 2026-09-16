@@ -1,3 +1,13 @@
+# DropoutKiller 0.8.1
+
+- Removed the obsolete pre-Lean detector implementations and routes (`alra_global_by_group`, `eb_zero_null`, and `alra_quantile`) from the production workflow.
+- Confirmed that the current main-line package contains no scGACL/Gamma-Normal detector implementation and explicitly removed scGACL from the package contract and documentation.
+- Removed deprecated public aliases and compatibility surfaces: `DropoutKiller`, `run_dropout_killer`, `dropout_membership`, `local_alra_detect`, `local_alra_score`, `select_dropout_mask`, `masked_factor_prediction`, `weighted_neighbor_prediction`, and `recovery_architecture_prediction`.
+- Reduced `dropout_killer()` to the calibrated SuperCell hierarchy Lean detector, with RNA and WNN modality variants only.
+- Removed historical Seurat routing arguments that are incompatible with the Lean hierarchy contract; `group_by` now represents the only hard broad-class boundary in the high-level wrapper.
+- Promoted P1 stabilized-state defaults into the lower-level `recover_dropout_expression()` API while keeping comparison engines available through that expert recovery interface.
+- Rewrote the README and mathematical contract around recoverable-zero detection, hierarchy/WNN geometry, thinning calibration, and target-safe P1 recovery.
+
 # DropoutKiller 0.8.0
 
 - Default to calibrated Supercell_hierarchy_Lean_membership detection.
