@@ -1,623 +1,201 @@
-# DropoutKiller 0.5 mathematical contract
+# DropoutKiller 0.8.1 mathematical contract
 
-## 1. Problem definition
+## 1. Estimand
 
-For one biological membership, let
+For raw UMI counts \(X\in\mathbb N_0^{G\times n}\), DropoutKiller separates two questions:
 
-\[
-X=(X_{gc})\in\mathbb R_+^{G\times n}
-\]
+1. **Detection:** which observed RNA zeros have sufficient cell-specific evidence for latent expression?
+2. **Recovery:** conditional on a zero being selected, what positive expression value is supported by target-safe cell-state information?
 
-be the supplied normalized expression matrix. DropoutKiller does not claim that a zero itself identifies technical dropout. It separates the problem into:
+The method does not assume that every observed zero is a separate technical-dropout process, and it does not use scGACL or a Gamma-Normal gene-by-cell-type dropout posterior.
 
-1. **detection**: decide which observed zeros have sufficient evidence against a biological-zero reconstruction null;
-2. **recovery**: conditional on an event already being classified as technical dropout, estimate its positive latent expression magnitude and uncertainty.
-
-Observed non-dropout coordinates are immutable.
-
-If the final mask is \(M\), then
-
-\[
-X^{out}_{gc}=
-\begin{cases}
-X_{gc}, & M_{gc}=0,\\
-\widehat\lambda_{gc}, & M_{gc}=1.
-\end{cases}
-\]
-
-The package never writes a prediction over an observed nonzero value.
+Observed nonzero coordinates are immutable.
 
 ---
 
-## 2. Membership construction
+## 2. Working scale
 
-Cells may first be partitioned by supplied hard biological strata, for example major cell type and optionally donor/condition. Within each stratum, a Euclidean kNN graph is built from the supplied low-dimensional embedding and coarse-grained with a SuperCell-style target size controlled by `gamma`.
-
-Default:
+The production workflow transforms raw counts once:
 
 \[
-\gamma=150.
+Y_{gc}=\log\left(1+s\frac{X_{gc}}{\sum_hX_{hc}}\right),\qquad s=10^4.
 \]
 
-Membership labels are canonicalized once in cell order before returning. This changes labels only, not the underlying partition, and makes later alignment idempotent.
+All detection and deterministic recovery values live on this normalized log-expression scale.
 
 ---
 
-## 3. Membership-local low-rank reconstruction
+## 3. Broad biological boundaries
 
-For membership \(m\), let
+The user supplies a broad biological class \(B_c\) for each cell. These classes are hard borrowing boundaries. Fine subclusters are not inferred as boundaries.
 
-\[
-X_m\in\mathbb R_+^{G\times n_m}.
-\]
-
-A rank-\(k\) reconstruction is obtained from a truncated SVD:
+Within each class, a kNN graph is constructed and Walktrap retains its complete merge history. The target number of final memberships is
 
 \[
-X_m\approx U_kD_kV_k^T=\widehat X_m.
+K_B=\max\left(1,\left\lfloor\frac{n_B}{\gamma}\right\rfloor,C_B\right),
 \]
 
-Automatic rank selection keeps the existing singular-spacing heuristic. The 0.5 redesign changes the **zero-null thresholding**, not the low-rank reconstruction itself, so detection and recovery changes can be attributed separately.
+where \(C_B\) is the connected-component count and the default is \(\gamma=150\).
+
+No graph edge or recovery donor is introduced across different broad classes.
 
 ---
 
-## 4. Why the original empirical 0.1% threshold is not the default
+## 4. RNA low-rank evidence
 
-The historical ALRA-style gate used a per-gene empirical lower quantile
-
-\[
-Q_{0.001}(\widehat X_{g\cdot}).
-\]
-
-In a membership of \(n_m\) cells, the expected number of observations represented by this tail is
+For normalized expression, a truncated SVD provides
 
 \[
-0.001n_m.
+Y\approx U_kD_kV_k^T=\widehat Y.
 \]
 
-For \(n_m<1000\), the empirical 0.1% quantile is determined almost entirely by the first one or two order statistics. This creates an avoidable finite-sample instability in membership-local use.
+Automatic rank uses the retained ALRA singular-value-spacing heuristic. For each gene, the reconstructed negative tail provides a scale estimate. The detector feature \(z_{gc}\) is the standardized margin of \(\widehat Y_{gc}\) above the gene-specific ALRA-style gate.
 
-The historical implementation is retained under
-
-```r
-detection_method = "alra_quantile"
-```
-
-but is not the 0.5 default.
+This quantity is latent-expression evidence. It is not a posterior probability.
 
 ---
 
-## 5. Finite-sample empirical-Bayes biological-zero null
+## 5. Hierarchy-local support
 
-The default detector is
+For query cell \(c\), donors are selected from its own final membership first. Only when fewer than `neighbor_k` usable donors exist are cells borrowed from the nearest connected memberships in the retained Walktrap hierarchy.
 
-```r
-detection_method = "eb_zero_null"
-```
-
-and retains the ALRA symmetry idea:
-
-> under a biological-zero null, low-rank reconstruction error is approximately symmetric around zero.
-
-For gene \(g\), define negative reconstructed values
+Let \(W_{cj}\) be the row-normalized donor weight and \(I(Y_{gj}>0)\) indicate detected positive expression. Then
 
 \[
-\mathcal N_g=\{c:\widehat X_{gc}<0\}
+s_{gc}=\sum_jW_{cj}I(Y_{gj}>0)
 \]
 
-with size
+and the local support feature is
 
 \[
-n_g^-=|\mathcal N_g|.
+L_{gc}=\operatorname{logit}\left(\frac{s_{gc}+0.01}{1.02}\right).
 \]
 
-The local second-moment estimator is
-
-\[
-s_g^2=
-\frac{1}{\max(n_g^-,1)}
-\sum_{c\in\mathcal N_g}\widehat X_{gc}^2.
-\]
-
-Because this estimate is noisy when \(n_g^-\) is small, define a robust membership-level prior center
-
-\[
-s_0^2=\operatorname{median}_{g\in\mathcal G_*}(s_g^2),
-\]
-
-where \(\mathcal G_*\) contains genes with at least `min_negative` negative reconstructed values and finite positive variance.
-
-Let
-
-\[
-\nu_0=\texttt{variance_prior_df}.
-\]
-
-The shrinkage weight is
-
-\[
-w_g=\frac{n_g^-}{n_g^-+\nu_0},
-\]
-
-and the finite-sample zero-null variance is
-
-\[
-\boxed{
-\widetilde s_g^2=w_gs_g^2+(1-w_g)s_0^2
-}
-\]
-
-with
-
-\[
-\widetilde s_g=\sqrt{\widetilde s_g^2}.
-\]
-
-Thus:
-
-- large memberships / many negative residuals: \(w_g\to1\), gene-specific evidence dominates;
-- small memberships / weak negative support: \(w_g\to0\), the estimate shrinks toward the membership-level scale;
-- finite-sample uncertainty therefore grows smoothly rather than relying on an extreme empirical order statistic.
+Self-neighbors are excluded.
 
 ---
 
-## 6. Zero-event hypothesis testing
+## 6. Membership context
 
-Only observed zeros with positive low-rank reconstruction are candidates for the expressed/dropout alternative.
-
-For candidate \((g,c)\):
+For query membership \(m\) inside broad group \(B\), define \(k_m\) and \(n_m\) as positive and total cell counts for the gene within the membership and \(k_B,n_B\) analogously for the broad group. The context feature is
 
 \[
-Z_{gc}=\frac{\widehat X_{gc}}{\widetilde s_g}.
-\]
-
-Under the working one-sided biological-zero null,
-
-\[
-p_{gc}=P(N(0,1)\ge Z_{gc})
-       =1-\Phi(Z_{gc}).
-\]
-
-Within each **gene and membership**, candidate p-values are Benjamini-Hochberg adjusted while using the full number of observed zeros of that gene as the number of tested hypotheses. Let the adjusted value be
-
-\[
-q_{gc}.
-\]
-
-DropoutKiller stores
-
-\[
-\boxed{
-\text{confidence}_{gc}=1-q_{gc}
-}
-\]
-
-for compatibility with the existing score interface.
-
-This is **not** a Bayesian posterior probability of technical dropout.
-
-With the default
-
-```r
-threshold = 0.95
-```
-
-selection corresponds to
-
-\[
-q_{gc}\le0.05
-\]
-
-under the working zero-null model.
-
-The finite-sample detector therefore converts the old score cutoff into an interpretable gene-wise multiple-testing threshold rather than an uncalibrated probability label.
-
----
-
-## 7. Detection and recovery are separate estimands
-
-A key 0.5 distinction is:
-
-\[
-\text{detect whether a zero is incompatible with biological zero}
-\]
-
-is different from
-
-\[
-\text{estimate its expression magnitude once classified as dropout}.
-\]
-
-The recovery model never changes the mask produced by detection.
-
----
-
-## 8. Target-leakage-free membership factor state
-
-For a membership containing recovery events, let \(T\) be the set of all target genes with at least one masked event.
-
-Every gene in \(T\) is excluded from factor-feature learning.
-
-Using a set \(F\subseteq\{1,\ldots,G\}\setminus T\) of high-variance non-target genes, standardized expression is decomposed by truncated SVD to obtain cell factor scores
-
-\[
-z_c\in\mathbb R^K.
-\]
-
-Therefore the prediction path for a target \((g,c)\) is
-
-\[
-X_{c,-T}\rightarrow z_c\rightarrow\widehat X_{gc}
-\]
-
-and never
-
-\[
-X_{gc}\rightarrow z_c\rightarrow\widehat X_{gc}.
-\]
-
-This prevents direct target leakage.
-
----
-
-## 9. Positive-conditional target magnitude
-
-Once \((g,c)\) is already classified as technical dropout, the default recovery estimand is
-
-\[
-\boxed{
-E[X_{gc}\mid X_{gc}>0,z_c,m]
-}
-\]
-
-rather than
-
-\[
-E[X_{gc}\mid z_c,m]
-\]
-
-that mixes reliable biological zeros with positive expression magnitudes.
-
-This is controlled by
-
-```r
-factor_target = "positive"
-```
-
-(default).
-
-For reproducibility, the previous unconditional target remains available as
-
-```r
-factor_target = "all_observed"
-```
-
-Unmasked zeros are never changed; they are simply excluded from the **magnitude model** after a separate detector has already classified the query coordinate as technical dropout.
-
-This design deliberately couples a more selective FDR-aware detector to a positive-conditional recovery model. Using positive-conditional recovery on arbitrary natural zeros would be biased upward and is not supported.
-
----
-
-## 10. Ridge factor regression
-
-For target gene \(g\), let \(D_g\) be reliable donor cells. Under the default positive target,
-
-\[
-D_g=\{c:M_{gc}=0,\ X_{gc}>0\}.
-\]
-
-Construct
-
-\[
-Z_g=[\mathbf 1,z_c]_{c\in D_g}.
-\]
-
-The ridge estimator is
-
-\[
-\widehat\beta_g=
-\arg\min_\beta
+H_{gc}=\frac{n_m}{n_m+50}
 \left[
-\|y_g-Z_g\beta\|_2^2+
-\lambda\|\beta_{factor}\|_2^2
-\right],
+\operatorname{logit}\left(\frac{k_m+0.5}{n_m+1}\right)-
+\operatorname{logit}\left(\frac{k_B+0.5}{n_B+1}\right)
+\right].
 \]
 
-with the intercept unpenalized.
-
-Closed form:
-
-\[
-\widehat\beta_g=
-(Z_g^TZ_g+P)^{-1}Z_g^Ty_g.
-\]
+The multiplicative term shrinks unstable small-membership contrasts toward zero.
 
 ---
 
-## 11. Exact analytic leave-one-out shrinkage
+## 7. Calibrated Lean detector
 
-For ridge linear smoother \(H\), the leave-one-out prediction is
-
-\[
-\widehat y_i^{(-i)}
-=
-y_i-
-\frac{y_i-\widehat y_i}{1-h_{ii}}.
-\]
-
-Let the leave-one-out null prediction be the donor mean excluding cell \(i\):
+The production detector is a class-balanced logistic model on exactly three features:
 
 \[
-\mu_i^{(-i)}.
+\eta_{gc}=\beta_0+\beta_1z_{gc}+\beta_2L_{gc}+\beta_3H_{gc}.
 \]
 
-Define
+A zero is selected when
 
 \[
-d_i=\widehat y_i^{(-i)}-\mu_i^{(-i)},
+\eta_{gc}>t,
 \]
+
+where \(t\) is fitted from artificial-thinning calibration. The stored sigmoid \(\sigma(\eta_{gc})\) is a score only; it is not interpreted as a biological dropout posterior.
+
+### Calibration labels
+
+Counts are independently thinned:
 
 \[
-t_i=y_i-\mu_i^{(-i)}.
+X'_{gc}\mid X_{gc}\sim\operatorname{Binomial}(X_{gc},q),
 \]
 
-The squared-error-optimal linear shrinkage of the factor contribution is
+with default \(q=0.5\) and seeds 10001:10003.
 
-\[
-\boxed{
-q_g=
-\operatorname{clip}_{[0,1]}
-\frac{\sum_i d_it_i}{\sum_i d_i^2}
-}
-\]
+- Artificially lost positives: \(X_{gc}>0\) and \(X'_{gc}=0\).
+- Proxy negatives: original zeros with prevalence \(\le0.005\) in the current broad class and \(\ge0.20\) in another broad class.
 
-and query prediction is
-
-\[
-\boxed{
-\widehat\lambda_{gc}
-=
-\max\{0,\mu_g+q_g(\widehat y^{factor}_{gc}-\mu_g)\}
-}
-\]
-
-where \(\mu_g\) is the positive-donor mean under the default target.
-
-If held-out factor information is unsupported,
-
-\[
-q_g=0
-\]
-
-and recovery falls back to the positive membership mean.
+Every thinning replicate rebuilds the detector geometry. The default `fpr=0.01` controls the empirical training proxy-negative exceedance rate only. It is neither a biological FDR nor a guarantee on independent data.
 
 ---
 
-## 12. Predictability diagnostic
+## 8. Paired RNA+ATAC geometry
 
-Define leave-one-out SSE for the donor-mean null and shrunken factor model:
+For paired multiome Seurat inputs, RNA PCA and ATAC TF-IDF/LSI are rebuilt. LSI component 1 is excluded. WNN is recomputed separately inside each broad biological class.
 
-\[
-SSE_0=\sum_i(y_i-\mu_i^{(-i)})^2,
-\]
+The affinity follows the SuperCell 2.0 multimodal-neighbor convention
 
 \[
-SSE_1=\sum_i(y_i-\widehat y_{i,shrunk}^{(-i)})^2.
+A_{ij}=1-2d_{ij}^2,
 \]
 
-Stored predictability is
+followed by symmetrization and removal of self-loops. Walktrap uses this affinity directly. Missing WNN edges are not replaced with RNA-only Euclidean edges.
 
-\[
-\boxed{
-D_g^2=
-\operatorname{clip}_{[0,1]}
-\left(1-\frac{SSE_1}{SSE_0}\right)
-}
-\]
-
-when the null SSE is positive.
-
-This measures whether cell-specific coexpression adds held-out information beyond the membership-level positive mean.
+ATAC therefore informs neighborhood geometry, not the recovered RNA magnitude directly.
 
 ---
 
-## 13. Predictive uncertainty and differential variability
+## 9. Selective P1 stabilized-state recovery
 
-The previous implementation estimated target residual variance from in-sample fitted residuals. Version 0.5 instead uses leave-one-out residual MSE:
+Let \(M\) be the detector mask. Recovery is evaluated only where \(M_{gc}=1\).
 
-\[
-\widehat\sigma_{g,LOO}^2
-=
-\frac1{|D_g|}
-\sum_{i\in D_g}
-(y_i-\widehat y_{i,shrunk}^{(-i)})^2.
-\]
-
-For query cell \(c\), parameter uncertainty is approximated using ridge leverage \(h_c\) and mean-estimation contribution:
+Target genes are deterministically partitioned into folds. For a target fold \(T_f\), every gene in \(T_f\) is excluded from predictor-state construction, preventing the path
 
 \[
-\ell_c=
-\frac{(1-q_g)^2}{|D_g|}
-+q_g^2h_c.
+Y_g\rightarrow\text{cell state}\rightarrow\widehat Y_g.
 \]
 
-The stored predictive variance is
+For non-target genes, standardized predictor expression receives one row-stochastic geometry smoothing step
 
 \[
-\boxed{
-V_{gc}=
-\widehat\sigma_{g,LOO}^2(1+\ell_c)
-}
+Z^*=(1-\rho)Z+\rho ZP^T,
 \]
 
-and
+with default \(\rho=0.25\), after which a low-dimensional factor state is learned.
+
+For target gene \(g\), only positive donor cells are used. With factor design matrix \(Q_g\), the ridge state is
 
 \[
-\text{prediction\_sd}_{gc}=\sqrt{V_{gc}}.
+\widehat\beta_g=(Q_g^TQ_g+P_\lambda)^{-1}Q_g^Ty_g,
 \]
 
-This is an approximate predictive variance, not a fully calibrated Bayesian posterior.
+with an unpenalized intercept and default ridge penalty \(\lambda=2\).
 
-For the default positive target, repeated completed draws use a Gamma moment match. Given stored predictive mean \(m_{gc}>0\) and variance \(V_{gc}>0\), define
-
-\[
-k_{gc}=\frac{m_{gc}^2}{V_{gc}},
-\qquad
-\theta_{gc}=\frac{V_{gc}}{m_{gc}}.
-\]
-
-Then
-
-\[
-X_{gc}^{(b)}\sim\operatorname{Gamma}(k_{gc},\theta_{gc})
-\]
-
-satisfies
-
-\[
-E[X_{gc}^{(b)}]=m_{gc},
-\qquad
-\operatorname{Var}(X_{gc}^{(b)})=V_{gc},
-\qquad
-X_{gc}^{(b)}>0.
-\]
-
-This preserves the first two predictive moments exactly under the approximation and avoids the mean shift produced by truncating a Gaussian below zero.
+Analytic leave-one-out predictions estimate whether the factor state improves over the positive-donor mean. Unsupported factor contributions shrink toward the conservative mean state. The production defaults use five target-gene folds, support-adaptive factor rank, and `bias_kappa=10`.
 
 ---
 
-## 14. Why the mean matrix alone cannot preserve DV
+## 10. Output invariants
 
-For latent expression \(\lambda_{gc}\):
+If \(Y^{out}\) is the deterministic recovered matrix,
 
 \[
-\boxed{
-\operatorname{Var}(\lambda_g\mid Y)
-=
-\operatorname{Var}_c(E[\lambda_{gc}\mid Y])
-+
-E_c(\operatorname{Var}[\lambda_{gc}\mid Y])
-}
+Y^{out}_{gc}=Y_{gc}\qquad\text{for every }Y_{gc}>0.
 \]
 
-Replacing a missing value by only its conditional mean discards the second term and therefore contracts variance.
-
-Accordingly, DropoutKiller exposes:
-
-- deterministic recovery mean;
-- event-level `prediction_sd`;
-- sparse `predictive_variance`;
-- `sample_dropout_expression()` for repeated completed draws.
-
-DV/covariance/network analysis should propagate repeated draws rather than treating the deterministic mean matrix as error-free observation.
+Only selected observed zeros may change. Recovery values are constrained non-negative on the working scale. Predictive variance is stored for recovery engines that provide an uncertainty model.
 
 ---
 
-## 15. Multiple-imputation interpretation
+## 11. Validation contract
 
-For dropout events \(\mathcal D\), generate
+Detector fitting and performance evaluation must use different masks or datasets. A valid benchmark should report separately:
 
-\[
-X^{(1)},\ldots,X^{(B)}.
-\]
+- recoverable-zero precision/recall or analogous detection metrics;
+- reconstruction MSE/MAE/Spearman conditional on held-out positives;
+- stability of DE and gene-set enrichment;
+- clustering and marker preservation;
+- uncertainty coverage when predictive variance is used.
 
-Observed coordinates are identical across all draws. Only \((g,c)\in\mathcal D\) vary.
-
-For a statistic \(T\), uncertainty-aware downstream analysis should operate on
-
-\[
-T^{(b)}=T(X^{(b)})
-\]
-
-and summarize the distribution over \(b\), rather than computing only
-
-\[
-T(E[X\mid Y]).
-\]
+An increase in post-recovery coexpression is not self-validating because coexpression contributes to the recovery state.
 
 ---
 
-## 16. Validation contract
+## 12. Supported production API
 
-Recovery cannot validate itself by showing that post-recovery coexpression becomes stronger. If the predictor used coexpression to generate \(\widehat X_g\), an increase in
-
-\[
-\operatorname{cor}(\widehat X_g,X_h)
-\]
-
-may merely reflect model feedback.
-
-Validation must use held-out information.
-
-### 16.1 Pseudo-mask validation
-
-Hide reliable observed positive coordinates, fit without them, and compare held-out predictions against their known observations.
-
-### 16.2 Count-level thinning
-
-For UMI counts, prefer
-
-\[
-Y'_{gc}\mid Y_{gc}\sim\operatorname{Binomial}(Y_{gc},\rho),
-\]
-
-or equivalent Poisson thinning. Newly created zeros then have known technical origin and better approximate the measurement process than setting normalized positives directly to zero.
-
-### 16.3 Separate detection and recovery metrics
-
-Report separately:
-
-- detection recall / mask stability;
-- recovery error conditional on an oracle mask;
-- end-to-end error;
-- predictive interval coverage;
-- DV/covariance recovery.
-
----
-
-## 17. Statistical boundaries
-
-1. `confidence` under `eb_zero_null` is `1 - BH q`, not posterior dropout probability.
-2. Gene-wise BH control is conditional on the approximate symmetric Gaussian zero-null and does not constitute exact global FDR control across all genes and memberships.
-3. Positive-conditional recovery is appropriate only for coordinates already selected as technical dropout; it must not be applied indiscriminately to natural zeros.
-4. Factor rank describes only the predictable coexpression component. Residual biological variability remains in predictive variance.
-5. The historical empirical-quantile detector and neighbor recovery engine remain available only as explicit reproducibility/comparator paths.
-6. Recovered values are continuous normalized-expression estimates, not integer raw counts.
-
----
-
-## 18. Default 0.5 workflow
-
-```text
-hard biological strata
-        |
-        v
-SuperCell-style membership
-        |
-        v
-membership low-rank reconstruction
-        |
-        v
-negative-null variance EB shrinkage
-        |
-        v
-one-sided p values + gene-wise BH
-        |
-        v
-q <= 0.05 dropout mask
-        |
-        v
-exclude target genes from factor features
-        |
-        v
-positive-donor target ridge
-        |
-        v
-analytic LOO shrinkage
-        |
-        v
-mean + predictive variance
-        |
-        v
-selective replacement + optional repeated draws
-```
+The production detector is only the SuperCell hierarchy Lean detector, with RNA and WNN modality variants. Historical scGACL, empirical-Bayes zero-null, local ALRA-quantile, and global-ALRA detector routes are not part of the current API. Comparator recovery engines may remain internally available for controlled ablation, but the production recovery default is P1 stabilized state.

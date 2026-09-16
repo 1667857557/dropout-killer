@@ -1,26 +1,30 @@
-test_that("legacy all-observed factor target still uses unmasked zeros", {
+test_that("internal all-observed factor target still uses unmasked zeros", {
   x <- matrix(c(0, 0, 0, 4, 4,
                 1, 2, 3, 4, 5), nrow = 2, byrow = TRUE)
   rownames(x) <- c("g1", "g2"); colnames(x) <- paste0("c", 1:5)
   mask <- Matrix::sparseMatrix(i = 1, j = 1, x = TRUE, dims = dim(x))
-  ev <- masked_factor_prediction(x, rep(1, 5), mask, factor_rank = 1,
-                                 factor_features = 2, min_feature_observed = 3,
-                                 min_target_observed = 10, return_events = TRUE,
-                                 target_mode = "all_observed")
+  ev <- DropoutKiller:::masked_factor_prediction(
+    x, rep(1, 5), mask, factor_rank = 1,
+    factor_features = 2, min_feature_observed = 3,
+    min_target_observed = 10, return_events = TRUE,
+    target_mode = "all_observed"
+  )
   expect_equal(ev$prediction[1], mean(c(0, 0, 4, 4)))
   expect_equal(ev$predictability[1], 0)
   expect_equal(ev$recovery_method[1], "membership_mean")
   expect_true(is.finite(ev$prediction_sd[1]))
 })
 
-test_that("default factor target conditions magnitude on reliable positive donors", {
+test_that("internal factor target conditions magnitude on reliable positive donors", {
   x <- matrix(c(0, 0, 0, 4, 4,
                 1, 2, 3, 4, 5), nrow = 2, byrow = TRUE)
   rownames(x) <- c("g1", "g2"); colnames(x) <- paste0("c", 1:5)
   mask <- Matrix::sparseMatrix(i = 1, j = 1, x = TRUE, dims = dim(x))
-  ev <- masked_factor_prediction(x, rep(1, 5), mask, factor_rank = 1,
-                                 factor_features = 2, min_feature_observed = 3,
-                                 min_target_observed = 10, return_events = TRUE)
+  ev <- DropoutKiller:::masked_factor_prediction(
+    x, rep(1, 5), mask, factor_rank = 1,
+    factor_features = 2, min_feature_observed = 3,
+    min_target_observed = 10, return_events = TRUE
+  )
   expect_equal(ev$prediction[1], 4)
   expect_equal(ev$n_observed_gene[1], 2L)
   expect_equal(ev$recovery_method[1], "positive_membership_mean")
@@ -44,9 +48,11 @@ test_that("masked factor learns held-out coexpression without using the target v
   truth <- x[1, hold]
   xm <- x; xm[1, hold] <- 0
   mask <- Matrix::sparseMatrix(i = rep(1, length(hold)), j = hold, x = TRUE, dims = dim(xm))
-  ev <- masked_factor_prediction(xm, rep(1, n), mask, factor_rank = 2,
-                                 factor_features = 5, min_feature_observed = 20,
-                                 min_target_observed = 20, return_events = TRUE)
+  ev <- DropoutKiller:::masked_factor_prediction(
+    xm, rep(1, n), mask, factor_rank = 2,
+    factor_features = 5, min_feature_observed = 20,
+    min_target_observed = 20, return_events = TRUE
+  )
   baseline <- mean(xm[1, -hold][xm[1, -hold] > 0])
   expect_lt(sqrt(mean((ev$prediction - truth)^2)), sqrt(mean((baseline - truth)^2)))
   expect_gt(mean(ev$predictability), 0)
@@ -91,9 +97,11 @@ test_that("uncertainty-aware positive draws preserve observed coordinates and st
                 1, 2, 3, 4), nrow = 2, byrow = TRUE)
   rownames(x) <- c("g1", "g2"); colnames(x) <- paste0("c", 1:4)
   mask <- Matrix::sparseMatrix(i = 1, j = 1, x = TRUE, dims = dim(x))
-  d <- recover_dropout_expression(x, mask, rep(1, 4), factor_rank = 1,
-                                  factor_features = 2, min_feature_observed = 3,
-                                  min_target_observed = 10, return_details = TRUE)
+  d <- recover_dropout_expression(
+    x, mask, rep(1, 4), recovery_method = "masked_factor",
+    factor_rank = 1, factor_features = 2, min_feature_observed = 3,
+    min_target_observed = 10, return_details = TRUE
+  )
   res <- list(expression = d$expression, events = d$events,
               uncertainty_available = d$uncertainty_available,
               settings = list(recovery_method = "masked_factor", factor_target = "positive"))

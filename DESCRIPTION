@@ -1,20 +1,20 @@
 Package: DropoutKiller
 Type: Package
-Title: Selective Dropout Recovery for Single-Cell RNA Sequencing
-Version: 0.8.0
+Title: Selective Recoverable-Zero Detection and Recovery for Single-Cell RNA Sequencing
+Version: 0.8.1
 Authors@R: person("DropoutKiller", "Developers", email = "dropoutkiller@users.noreply.github.com", role = c("aut", "cre"))
 Author: DropoutKiller Developers [aut, cre]
 Maintainer: DropoutKiller Developers <dropoutkiller@users.noreply.github.com>
-Description: Detects recoverable zero events using ALRA evidence, SuperCell
-    Walktrap hierarchy neighbor support, and shrunk membership context learned
-    by a balanced logistic model. Paired RNA and ATAC Seurat inputs automatically
-    rebuild PCA, LSI excluding its first component, and weighted nearest-neighbor
-    affinities following the SuperCell 2.0 implementation. Hierarchy borrowing
-    is restricted to broad cell classes. A fitted model or explicit artificial
-    thinning calibration supplies the detection threshold. Selected zeros are
-    recovered with the target-safe cross-fitted P1 stabilized state framework;
-    observed nonzero values are preserved on the normalized working scale.
-    Historical detectors remain available for explicit comparisons.
+Description: Detects recoverable RNA zero events using standardized ALRA low-rank
+    evidence, SuperCell Walktrap hierarchy neighbor support, and shrunk local
+    membership context combined by a calibrated class-balanced logistic model.
+    Paired RNA and ATAC Seurat inputs rebuild RNA PCA, ATAC LSI excluding the
+    first component, and weighted nearest-neighbor affinities following the
+    SuperCell 2.0 graph convention. Borrowing is restricted to supplied broad
+    biological classes. Selected zero events are recovered with the target-safe
+    cross-fitted P1 stabilized-state framework while observed nonzero values are
+    preserved on the normalized working scale. The package does not use scGACL
+    or a Gamma-Normal dropout-probability model.
 License: MIT + file LICENSE
 URL: https://github.com/1667857557/dropout-killer
 BugReports: https://github.com/1667857557/dropout-killer/issues
