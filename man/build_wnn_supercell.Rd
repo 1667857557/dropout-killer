@@ -1,7 +1,7 @@
 \name{build_wnn_supercell}
 \alias{build_wnn_supercell}
 \title{Rebuild RNA PCA, ATAC LSI and SuperCell 2.0 WNN hierarchy}
-\description{Rebuild RNA PCA, ATAC LSI and SuperCell 2.0 WNN hierarchy.}
+\description{Rebuild RNA PCA, ATAC LSI and SuperCell 2.0 WNN hierarchy. The dense RNA scale.data layer or slot is released immediately after PCA because downstream WNN uses the stored reduction. Modality weights and weighted nearest neighbors are computed on compact reduction-only objects within broad classes. Finite neighbor edges are retained when Seurat pads short rows with NA.}
 \usage{
 build_wnn_supercell(object,rna_assay='RNA',atac_assay=NULL,group=NULL,
                                 gamma=150,npcs=40L,k_nn=30L,seed=1L)

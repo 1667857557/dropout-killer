@@ -20,6 +20,8 @@ test_that('WNN affinity follows the actual SuperCell 2.0 kernel', {
   for(i in 1:3)for(j in 1:2)expected[i,idx[i,j]]<-1-2*d[i,j]^2
   expect_equal(unname(as.matrix(a)),expected+t(expected))
   expect_equal(diag(as.matrix(a)),c(a=0,b=0,c=0))
+  padded_idx<-cbind(idx,NA_integer_);padded_dist<-cbind(d,NA_real_)
+  expect_equal(.dk_wnn_affinity(padded_idx,padded_dist,c('a','b','c')),a)
 })
 
 test_that('Walktrap keeps every cell and respects broad classes and components', {
@@ -133,6 +135,7 @@ test_that('paired multiome rebuilds PCA and LSI2+ and automatically uses WNN', {
   geo<-build_wnn_supercell(obj,group=obj$broad,gamma=5,npcs=5,k_nn=5)
   expect_identical(geo$provenance$dims.list[[2]],2:5)
   expect_true(geo$provenance$rebuilt)
+  expect_true(geo$provenance$rna_scale_data_released)
   e<-Matrix::summary(geo$affinity)
   expect_true(all(obj$broad[e$i]==obj$broad[e$j]));expect_true(all(e$i!=e$j))
   expect_equal(geo$affinity,Matrix::t(geo$affinity),ignore_attr=TRUE)
@@ -151,4 +154,22 @@ test_that('paired multiome rebuilds PCA and LSI2+ and automatically uses WNN', {
   expect_identical(out$result$settings$detection_method,.dk_lean_method(TRUE))
   expect_identical(out$result$settings$wnn$rna_assay,'RNA')
   expect_identical(out$result$settings$wnn$dims.list[[2]],2:5)
+
+  # Exercise the production route that calibrates a matching WNN Lean model
+  # by rebuilding geometry for each thinned RNA mask.
+  rna_auto<-rna
+  rna_auto[1:10,1:30]<-0
+  rna_auto[1:10,31:60]<-matrix(rbinom(10*30,8,.6),10,30)
+  rna_auto[11:20,31:60]<-0
+  rna_auto[11:20,1:30]<-matrix(rbinom(10*30,8,.6),10,30)
+  auto_obj<-SeuratObject::CreateSeuratObject(rna_auto)
+  auto_obj[['ATAC']]<-SeuratObject::CreateAssayObject(counts=atac)
+  auto_obj$broad<-rep(c('B','T'),each=30)
+  auto<-dropout_killer_seurat(auto_obj,group_by='broad',return_result=TRUE,
+    wnn_npcs=5,wnn_k=5,gamma=5,rank=3,recovery_method='neighbor',
+    lean_control=list(q=.5,seeds=123))
+  expect_identical(auto$result$settings$detection_method,.dk_lean_method(TRUE))
+  expect_identical(auto$result$detection$model$method,.dk_lean_method(TRUE))
+  expect_identical(auto$result$detection$model$calibration$seeds,123)
+  expect_true(auto$result$settings$wnn$rna_scale_data_released)
 })

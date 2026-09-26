@@ -4,6 +4,9 @@
 #' data slot of a new assay. RNA-only inputs rebuild detector geometry from the
 #' normalized RNA SVD. Paired RNA+ATAC inputs rebuild RNA PCA, ATAC TF-IDF/LSI
 #' (excluding LSI1), and WNN within each supplied broad class.
+#' Automatic WNN calibration needs raw RNA counts and at least two broad
+#' classes in `group_by`; a matching pre-fitted Lean model can be supplied when
+#' those calibration inputs are unavailable.
 #'
 #' @export
 dropout_killer_seurat <- function(object, assay = NULL, slot = "counts",
@@ -40,6 +43,12 @@ dropout_killer_seurat <- function(object, assay = NULL, slot = "counts",
     warning("slot='counts' with normalize=FALSE leaves raw counts on the recovery scale", call. = FALSE)
   if (!identical(slot, "counts") && normalize)
     warning("normalizing a non-count Seurat slot; set normalize=FALSE if the selected slot is already library/log normalized", call. = FALSE)
+  if (use_wnn && is.null(lean_model)) {
+    if (!identical(slot, "counts") || !normalize)
+      stop("automatic WNN calibration requires raw RNA counts with normalize=TRUE; otherwise supply a fitted lean_model", call. = FALSE)
+    if (is.null(group) || length(unique(group)) < 2L)
+      stop("automatic WNN calibration requires group_by with at least two broad classes; otherwise supply a fitted lean_model", call. = FALSE)
+  }
 
   value <- function(name, default) if (is.null(dots[[name]])) default else dots[[name]]
   geometry <- NULL
@@ -52,7 +61,6 @@ dropout_killer_seurat <- function(object, assay = NULL, slot = "counts",
     geometry <- build(object)
     emb <- geometry$embedding
     if (is.null(lean_model)) {
-      if (!identical(slot, "counts") || !normalize) stop("automatic WNN calibration requires raw RNA counts", call. = FALSE)
       rebuild <- function(counts) {
         obj <- object
         obj[[assay]] <- SeuratObject::CreateAssayObject(counts = counts)

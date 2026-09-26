@@ -128,7 +128,19 @@ Every WNN build recomputes:
 - RNA normalization, variable features, scaling, and PCA;
 - ATAC TF-IDF, top features, and LSI;
 - PCA dimensions 1:40 and LSI dimensions 2:40, reduced as needed for small inputs;
-- `FindMultiModalNeighbors()` separately inside each broad class.
+- Seurat modality weights and weighted nearest neighbors separately inside each broad class.
+
+After RNA PCA, the dense `scale.data` layer/slot is released and garbage
+collection runs before ATAC processing and WNN subsetting. WNN uses the PCA
+reduction, so retaining the scaled gene-by-cell matrix would only increase peak
+memory. Automatic multiome calibration requires raw RNA counts and a
+`group_by` column with at least two broad classes; provide a fitted matching
+`lean_model` when those calibration inputs are unavailable.
+
+The builder calls Seurat's modality-weight and weighted-neighbor steps directly,
+then keeps finite, in-range neighbor edges. This allows valid WNN edges to be
+used when Seurat pads a short neighbor row with `NA`; the invalid padding is not
+passed into sparse graph construction.
 
 LSI component 1 is always excluded. The hierarchy graph follows the SuperCell 2.0 multimodal-neighbor kernel
 
