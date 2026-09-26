@@ -128,6 +128,13 @@ Every thinning replicate rebuilds the detector geometry. The default `fpr=0.01` 
 
 For paired multiome Seurat inputs, RNA PCA and ATAC TF-IDF/LSI are rebuilt. LSI component 1 is excluded. WNN is recomputed separately inside each broad biological class.
 
+After PCA, the dense RNA `scale.data` layer/slot is removed and garbage
+collection runs. WNN only needs the retained PCA reduction. For each broad
+class, Seurat modality weights and weighted nearest neighbors are computed on
+a compact reduction-only Seurat object; RNA and ATAC count assays are not
+copied into each class-specific temporary object. Finite in-range WNN edges
+are retained when Seurat pads short neighbor rows with `NA`.
+
 The affinity follows the SuperCell 2.0 multimodal-neighbor convention
 
 \[

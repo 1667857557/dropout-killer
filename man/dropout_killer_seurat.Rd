@@ -15,7 +15,7 @@ dropout_killer_seurat(object, assay = NULL, slot = "counts",
 \item{object}{Seurat object.}
 \item{assay}{RNA input assay; defaults to RNA when available.}
 \item{slot}{Input slot. Defaults to \code{"counts"}.}
-\item{group_by}{Metadata column containing broad biological classes, not fine subclusters. Required for automatic proxy-negative calibration.}
+\item{group_by}{Metadata column containing broad biological classes, not fine subclusters. Automatic multiome WNN calibration requires at least two broad classes; with a fitted Lean model, the column may be omitted.}
 \item{new_assay}{Name of the recovered assay.}
 \item{return_result}{Return both the modified object and the full DropoutKiller result.}
 \item{normalize}{Optional logical. NULL chooses TRUE for the counts slot and FALSE otherwise.}

@@ -1,3 +1,9 @@
+# DropoutKiller (development version)
+
+- Release RNA `scale.data` after PCA during WNN construction so the dense assay layer is not retained in temporary broad-class objects.
+- Validate automatic multiome WNN calibration inputs before building geometry; it requires raw RNA counts and at least two broad classes unless a matching Lean model is supplied.
+- Add an end-to-end paired RNA+ATAC test for automatic WNN calibration and verify LSI1 exclusion and RNA scale-data release.
+
 # DropoutKiller 0.8.1
 
 - Removed the obsolete pre-Lean detector implementations and routes (`alra_global_by_group`, `eb_zero_null`, and `alra_quantile`) from the production workflow.
